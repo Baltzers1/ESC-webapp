@@ -114,6 +114,16 @@ chosen_date = st.date_input(
 day_start = pd.Timestamp.combine(chosen_date, datetime.min.time())
 day_end = day_start + pd.Timedelta(days=1)
 
+# Sikre datetime før sammenligning
+df["start time"] = pd.to_datetime(df["start time"], errors="coerce")
+df["end time"] = pd.to_datetime(df["end time"], errors="coerce")
+
+# Drop NaT før vi lager mask
+df = df.dropna(subset=["start time", "end time"])
+
+# Nå kan vi filtrere
+mask = (df["start time"] < day_end) & (df["end time"] > day_start)
+
 # Sørg for at begge er datetime64[ns] for sammenligning
 mask = (df["start time"] < day_end) & (df["end time"] > day_start)
 df_day = df.loc[mask].copy()
