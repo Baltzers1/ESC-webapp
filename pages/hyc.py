@@ -83,19 +83,27 @@ if df is None or df.empty:
     st.error("🚫 Ingen gyldige filer/kolonner ble funnet.")
     st.stop()
 
-# Konverter tid til datetime før vi gjør noe mer
-df["start time"] = pd.to_datetime(df["start time"], errors="coerce")
-df["end time"] = pd.to_datetime(df["end time"], errors="coerce")
+# ---- TYPEKONVERTERING ----
+# Konverter til datetime (UTC) og fjern tidssone
+df["start time"] = pd.to_datetime(df["start time"], errors="coerce", utc=True)
+df["end time"] = pd.to_datetime(df["end time"], errors="coerce", utc=True)
 
+# Dropp rader med ugyldige tider
+df = df.dropna(subset=["start time", "end time"])
+
+# Fjern tidssoneinfo (naive datetimes)
+df["start time"] = df["start time"].dt.tz_localize(None)
+df["end time"] = df["end time"].dt.tz_localize(None)
+
+# Konverter ampere-kolonner til tall
 for col in ["average amp (a)", "peak amp (a)"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
-
-df = df.dropna(subset=["start time", "end time", "average amp (a)", "peak amp (a)"])
+df = df.dropna(subset=["average amp (a)", "peak amp (a)"])
 if df.empty:
     st.error("🚫 Alle rader hadde mangler etter rensing.")
     st.stop()
 
-# Finn tilgjengelige datoer
+# Tilgjengelige datoer
 available_dates = sorted(pd.Series(df["start time"].dt.date.unique()).dropna())
 if not available_dates:
     st.error("🚫 Fant ingen datoer i dataene.")
@@ -110,28 +118,17 @@ chosen_date = st.date_input(
     format="DD.MM.YYYY",
 )
 
-# --- Over-midnatt håndtering ---
+# ---- OVER-MIDNATT HÅNDTERING ----
 day_start = pd.Timestamp.combine(chosen_date, datetime.min.time())
 day_end = day_start + pd.Timedelta(days=1)
 
-# Sikre datetime før sammenligning
-df["start time"] = pd.to_datetime(df["start time"], errors="coerce")
-df["end time"] = pd.to_datetime(df["end time"], errors="coerce")
-
-# Drop NaT før vi lager mask
-df = df.dropna(subset=["start time", "end time"])
-
-# Nå kan vi filtrere
-mask = (df["start time"] < day_end) & (df["end time"] > day_start)
-
-# Sørg for at begge er datetime64[ns] for sammenligning
 mask = (df["start time"] < day_end) & (df["end time"] > day_start)
 df_day = df.loc[mask].copy()
 if df_day.empty:
     st.warning(f"🚫 Ingen økter som overlapper {chosen_date:%d.%m.%Y}.")
     st.stop()
 
-# Klipp øktene til dagens tidsvindu
+# Klipp økter til dagens tidsvindu
 df_day["clipped_start"] = df_day["start time"].clip(lower=day_start, upper=day_end)
 df_day["clipped_end"] = df_day["end time"].clip(lower=day_start, upper=day_end)
 
@@ -190,6 +187,7 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
+# ---- TABELL ----
 with st.expander("Se data for valgt dato"):
     st.dataframe(
         df_day[
