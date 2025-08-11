@@ -189,9 +189,9 @@ st.plotly_chart(fig, use_container_width=True)
 
 # ---- TABELL ----
 with st.expander("Se data for valgt dato"):
-    st.dataframe(
-        df_day[
-            ["start time", "end time", "soc start (%)", "soc stop (%)",
-             "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
-        ].sort_values("clipped_start").reset_index(drop=True)
-    )
+    table_df = df_day.sort_values("clipped_start")[
+        ["start time", "end time", "soc start (%)", "soc stop (%)",
+         "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
+    ].reset_index(drop=True)
+    st.dataframe(table_df)
+
