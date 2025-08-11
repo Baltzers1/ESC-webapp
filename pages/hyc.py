@@ -1,18 +1,16 @@
-# app.py
 import os
 import random
-from datetime import datetime, date, time
+from datetime import datetime
 
 import pandas as pd
 import plotly.graph_objects as go
 import streamlit as st
 
 st.set_page_config(page_title="Ladeøkter – Ampere vs Tid", layout="wide")
-
-st.title("Ladeøkter (Ampere vs tid på døgnet)")
+st.title("📊 Ladeøkter (Ampere vs tid på døgnet)")
 st.caption("Last opp én eller flere CSV/XLSX-filer og velg dato for å plotte.")
 
-# --- SIDEBAR: opplasting og valg ---
+# --- SIDEBAR ---
 with st.sidebar:
     st.header("Innstillinger")
     files = st.file_uploader(
@@ -20,9 +18,8 @@ with st.sidebar:
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True,
     )
-    st.markdown("**Valg av dato**")
 
-# Relevante kolonner
+# Kolonner vi krever
 KOLONNER = [
     "start time", "end time", "charged energy (kwh)", "peak power (kw)",
     "average power (kw)", "soc start (%)", "soc stop (%)", "peak amp (a)",
@@ -30,27 +27,18 @@ KOLONNER = [
 ]
 
 def _read_any(file):
-    # Les CSV eller Excel basert på filnavn/innhold
     name = file.name.lower()
-    try:
-        if name.endswith(".csv"):
-            return pd.read_csv(file)
-        elif name.endswith(".xlsx") or name.endswith(".xls"):
-            return pd.read_excel(file)
-        else:
-            # Fallback: prøv Excel først, deretter CSV
-            try:
-                file.seek(0)
-                return pd.read_excel(file)
-            except Exception:
-                file.seek(0)
-                return pd.read_csv(file)
-    finally:
-        # Sørg for at stream-posisjon er på start for evt. ny lesing
+    if name.endswith(".csv"):
+        return pd.read_csv(file)
+    elif name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(file)
+    else:
         try:
             file.seek(0)
+            return pd.read_excel(file)
         except Exception:
-            pass
+            file.seek(0)
+            return pd.read_csv(file)
 
 def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
@@ -62,8 +50,7 @@ def _clean_columns(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def _concat_valid(dfs):
-    valids = []
-    msgs = []
+    valids, msgs = [], []
     for i, df in enumerate(dfs, start=1):
         df = _clean_columns(df)
         missing = [k for k in KOLONNER if k not in df.columns]
@@ -75,7 +62,7 @@ def _concat_valid(dfs):
     return (pd.concat(valids, ignore_index=True) if valids else None), msgs
 
 if not files:
-    st.info("👆 Last opp CSV/XLSX-filer for å komme i gang.")
+    st.info("👆 Last opp filer for å starte.")
     st.stop()
 
 raw_dfs = []
@@ -83,7 +70,7 @@ for f in files:
     try:
         raw_dfs.append(_read_any(f))
     except Exception as e:
-        st.error(f"💥 Feil ved lesing av **{f.name}**: {e}")
+        st.error(f"💥 Feil ved lesing av {f.name}: {e}")
 
 df, status_msgs = _concat_valid(raw_dfs)
 with st.expander("Importlogg"):
@@ -91,73 +78,69 @@ with st.expander("Importlogg"):
         st.write(m)
 
 if df is None or df.empty:
-    st.error("🚫 Ingen gyldige filer/kolonner ble funnet.")
+    st.error("🚫 Ingen gyldige data.")
     st.stop()
 
-# Konverter typer
+# Konverter tid og tall
 df["start time"] = pd.to_datetime(df["start time"], errors="coerce")
 df["end time"] = pd.to_datetime(df["end time"], errors="coerce")
 for col in ["average amp (a)", "peak amp (a)"]:
     df[col] = pd.to_numeric(df[col], errors="coerce")
 
-# Rens
+# Fjern ufullstendige rader
 df = df.dropna(subset=["start time", "end time", "average amp (a)", "peak amp (a)"])
 if df.empty:
-    st.error("🚫 Alle rader hadde mangler etter rensing.")
+    st.error("🚫 Ingen rader etter rensing.")
     st.stop()
 
 # Tilgjengelige datoer
 available_dates = sorted(pd.Series(df["start time"].dt.date.unique()).dropna())
 if not available_dates:
-    st.error("🚫 Fant ingen datoer i dataene.")
+    st.error("🚫 Ingen datoer funnet.")
     st.stop()
 
-# Dato-widget: bruker tilgjengelige datoer som gyldige valg
-col1, col2 = st.columns([1,1])
-with col1:
-    min_d, max_d = available_dates[0], available_dates[-1]
-    st.write(f"Tilgjengelig datoperiode: **{min_d.strftime('%d.%m.%Y')} – {max_d.strftime('%d.%m.%Y')}**")
+min_d, max_d = available_dates[0], available_dates[-1]
+default_date = random.choice(available_dates)
 
-with col2:
-    default_date = random.choice(available_dates)
-    chosen_date = st.date_input(
-        "Velg dato (fra tilgjengelige):",
-        value=default_date,
-        min_value=min_d,
-        max_value=max_d,
-        format="DD.MM.YYYY",
-    )
+chosen_date = st.date_input(
+    "Velg dato:",
+    value=default_date,
+    min_value=min_d,
+    max_value=max_d,
+    format="DD.MM.YYYY",
+)
 
-# Filtrer valgt dato
-df_dag = df[df["start time"].dt.date == chosen_date]
-if df_dag.empty:
-    st.warning(f"🚫 Ingen ladeøkter funnet for {chosen_date.strftime('%d.%m.%Y')}. Velg en annen dato.")
+# --- Klipp til valgt dags tidsvindu ---
+day_start = pd.Timestamp.combine(chosen_date, datetime.min.time())
+day_end = day_start + pd.Timedelta(days=1)
+
+mask = (df["start time"] < day_end) & (df["end time"] > day_start)
+df_day = df.loc[mask].copy()
+
+if df_day.empty:
+    st.warning(f"🚫 Ingen økter for {chosen_date:%d.%m.%Y}.")
     st.stop()
 
-# Konverter klokkeslett til fast dato (for x-akse)
-def to_epoch_day_clock(ts: pd.Timestamp) -> datetime:
+df_day["clipped_start"] = df_day["start time"].clip(lower=day_start, upper=day_end)
+df_day["clipped_end"] = df_day["end time"].clip(lower=day_start, upper=day_end)
+
+def to_day_clock(ts: pd.Timestamp) -> datetime:
     return datetime(1970, 1, 1, ts.hour, ts.minute, ts.second)
 
-df_dag = df_dag.copy()
-df_dag["start_clock"] = df_dag["start time"].apply(to_epoch_day_clock)
-df_dag["end_clock"] = df_dag["end time"].apply(to_epoch_day_clock)
+df_day["start_clock"] = df_day["clipped_start"].apply(to_day_clock)
+df_day["end_clock"] = df_day["clipped_end"].apply(to_day_clock)
 
-# ---- PLOTT ----
+# --- Plot ---
 fig = go.Figure()
-
-for _, row in df_dag.iterrows():
-    x0 = row["start_clock"]
-    x1 = row["end_clock"]
-    y0 = row["average amp (a)"]
-    y1 = row["peak amp (a)"]
+for _, row in df_day.iterrows():
+    x0, x1 = row["start_clock"], row["end_clock"]
+    y0, y1 = row["average amp (a)"], row["peak amp (a)"]
 
     hover = (
-        f"Start: {row['start time'].strftime('%H:%M')}<br>"
-        f"Slutt: {row['end time'].strftime('%H:%M')}<br>"
-        f"SoC Start: {row['soc start (%)']}%<br>"
-        f"SoC Slutt: {row['soc stop (%)']}%<br>"
-        f"Avg Amp: {y0:.1f} A<br>"
-        f"Peak Amp: {y1:.1f} A"
+        f"Start: {row['clipped_start']:%H:%M} (oppr.: {row['start time']:%d.%m %H:%M})<br>"
+        f"Slutt: {row['clipped_end']:%H:%M} (oppr.: {row['end time']:%d.%m %H:%M})<br>"
+        f"SoC Start: {row['soc start (%)']}% • SoC Slutt: {row['soc stop (%)']}%<br>"
+        f"Avg: {y0:.1f} A • Peak: {y1:.1f} A"
     )
 
     fig.add_trace(go.Scatter(
@@ -172,14 +155,18 @@ for _, row in df_dag.iterrows():
         showlegend=False
     ))
 
+START_OF_DAY = datetime(1970, 1, 1, 0, 0, 0)
+END_OF_DAY = datetime(1970, 1, 1, 23, 59, 59)
+
 fig.update_layout(
-    title=f"Ladeøkter for {chosen_date.strftime('%d.%m.%Y')} (Ampere vs tid på døgnet)",
+    title=f"Ladeøkter for {chosen_date:%d.%m.%Y} (Ampere vs tid på døgnet)",
     xaxis=dict(
         title="Tid på døgnet",
         type="date",
         tickformat="%H:%M",
         tickmode="linear",
-        dtick=3600000,  # 1 time i ms
+        dtick=3600000,
+        range=[START_OF_DAY, END_OF_DAY],
     ),
     yaxis=dict(title="Ampere (A)"),
     height=650,
@@ -188,10 +175,10 @@ fig.update_layout(
 
 st.plotly_chart(fig, use_container_width=True)
 
-# Litt nyttig tabellvisning
-with st.expander("Se data for valgt dato"):
+# --- Tabell ---
+with st.expander("Data for valgt dato"):
     show_cols = [
         "start time", "end time", "soc start (%)", "soc stop (%)",
         "average amp (a)", "peak amp (a)", "charged energy (kwh)"
     ]
-    st.dataframe(df_dag[show_cols].sort_values("start time").reset_index(drop=True))
+    st.dataframe(df_day[show_cols].sort_values("start time").reset_index(drop=True))
