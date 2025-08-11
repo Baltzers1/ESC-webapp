@@ -34,8 +34,7 @@ sim_page = st.Page(
 hyc_page = st.Page(
     page="pages/hyc.py",
     title="Alpitronic Data Plotting",
-    # icon=":material/graf",   LEGGER TIL ET ICON SENERE
-)
+    icon=":material/monitoring", 
 
 #Sidebar def
 pg = st.navigation(pages=[home_page,kemp_page,hyc_page,batt_page,calc_page,sim_page])
