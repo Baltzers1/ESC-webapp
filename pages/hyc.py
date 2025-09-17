@@ -7,17 +7,14 @@ import streamlit as st
 
 st.set_page_config(page_title="Ladeøkter – Ampere vs Tid", layout="wide")
 
-st.title("📊 Ladeøkter (Ampere vs tid på døgnet)")
-st.caption("Last opp én eller flere CSV/XLSX-filer og velg dato for å plotte.")
+st.title("Sessions (Ampes vs time of day)")
+st.caption("Upload one or more CSV/XLSX files and select a date to plot.")
 
-# --- SIDEBAR ---
-with st.sidebar:
-    st.header("Innstillinger")
     files = st.file_uploader(
-        "Velg én eller flere filer",
+        "Chose on or more files",
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True,
-    )
+
 
 # Relevante kolonner
 KOLONNER = [
@@ -64,7 +61,7 @@ def _concat_valid(dfs):
     return (pd.concat(valids, ignore_index=True) if valids else None), msgs
 
 if not files:
-    st.info("👆 Last opp CSV/XLSX-filer for å komme i gang.")
+    st.info("Upload CSV/XLSX files to get started.")
     st.stop()
 
 raw_dfs = []
