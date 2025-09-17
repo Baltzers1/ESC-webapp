@@ -14,6 +14,7 @@ st.caption("Upload one or more CSV/XLSX files and select a date to plot.")
         "Chose on or more files",
         type=["csv", "xlsx", "xls"],
         accept_multiple_files=True,
+    )
 
 
 # Relevante kolonner
