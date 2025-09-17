@@ -54,7 +54,7 @@ def simulering_antall_ganger_over_grense(grense_kw: int, n: int, maks_ladepunkte
 
 # ---------- UI: EV Lading (manuell klikking) ----------
 st.title("EV Charging Simulator")
-st.subheader("Trykk + for å legge til en bil, − for å fjerne")
+st.subheader("Use the + button to add a car, − button to remove a car")
 
 # Init bil-liste
 if "biler" not in st.session_state:
@@ -108,7 +108,7 @@ st.header(f"Total input power: {total_kw_input} kW")
 st.markdown("---")
 st.title("📊 Monte Carlo Simulation of Load Demand")
 
-max_antall_biler = st.number_input("Antall ladepunkter tilgjengelig", min_value=0, value=8, step=1)
+max_antall_biler = st.number_input("Number of Charge Points available at the site", min_value=0, value=8, step=1)
 grense = st.number_input("Net power capacity limit (kW)", value=800, step=50)
 antall_simuleringer = st.number_input("Number of simulations", value=10000, step=1000)
 
