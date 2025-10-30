@@ -1,206 +1,122 @@
-import random
-from datetime import datetime
-
 import pandas as pd
+import tkinter as tk
+from tkinter import filedialog, simpledialog
 import plotly.graph_objects as go
-import streamlit as st
+from datetime import datetime, timedelta
+import random
+import os
 
-st.set_page_config(page_title="Charging Sessions – Amps vs Time", layout="wide")
+# ----------------------------
+# ROBUST FILLESER FUNKSJONER
+# ----------------------------
 
-st.title("Sessions (Amps vs time of day)")
-st.caption("Upload one or more CSV/XLSX files and select a date to plot.")
+def _detect_delimiter(path):
+    """Prøv å gjette separator for CSV-filer."""
+    try:
+        with open(path, "r", encoding="utf-8-sig", errors="ignore") as f:
+            for _ in range(10):
+                line = f.readline()
+                if not line:
+                    break
+                line = line.strip()
+                if not line:
+                    continue
+                sc, cc, tc = line.count(";"), line.count(","), line.count("\t")
+                if max(sc, cc, tc) == 0:
+                    continue
+                if sc >= cc and sc >= tc: return ";"
+                if cc >= sc and cc >= tc: return ","
+                return "\t"
+    except Exception:
+        pass
+    return None
 
-# ---- FILE UPLOAD ----
-files = st.file_uploader(
-    "Choose one or more files",
-    type=["csv", "xlsx", "xls"],
-    accept_multiple_files=True,
+def read_any_file(path: str) -> pd.DataFrame:
+    """Les CSV/XLSX med automatisk separator- og encoding-håndtering."""
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".xlsx":
+        return pd.read_excel(path)
+
+    if ext == ".csv":
+        delim = _detect_delimiter(path)
+        tries = []
+        if delim == ";":
+            tries.append(dict(sep=";", decimal=",", encoding="utf-8-sig"))
+            tries.append(dict(sep=";", decimal=",", encoding="utf-8-sig",
+                              engine="python", on_bad_lines="skip"))
+        elif delim == ",":
+            tries.append(dict(sep=",", decimal=".", encoding="utf-8-sig"))
+            tries.append(dict(sep=",", decimal=".", encoding="utf-8-sig",
+                              engine="python", on_bad_lines="skip"))
+        elif delim == "\t":
+            tries.append(dict(sep="\t", decimal=",", encoding="utf-8-sig"))
+            tries.append(dict(sep="\t", decimal=".", encoding="utf-8-sig",
+                              engine="python", on_bad_lines="skip"))
+        # fallback
+        tries.append(dict(sep=None, engine="python", encoding="utf-8-sig"))
+        tries.append(dict(sep=None, engine="python", encoding="utf-8-sig",
+                          on_bad_lines="skip"))
+
+        last_err = None
+        for kw in tries:
+            try:
+                df = pd.read_csv(path, **kw)
+                if df.shape[1] >= 2:
+                    return df
+            except Exception as e:
+                last_err = e
+        raise RuntimeError(f"Error reading {os.path.basename(path)}: {last_err}")
+
+    raise RuntimeError(f"Ukjent filtype: {path}")
+
+# ----------------------------
+# HOVEDSCRIPT
+# ----------------------------
+
+root = tk.Tk()
+root.withdraw()
+
+filstier = filedialog.askopenfilenames(
+    title="Velg én eller flere CSV eller Excel-filer",
+    filetypes=[("Excel filer", "*.xlsx"), ("CSV filer", "*.csv"), ("Alle filer", "*.*")]
 )
 
-# Expected columns
-COLUMNS = [
+kolonner = [
     "start time", "end time", "charged energy (kwh)", "peak power (kw)",
     "average power (kw)", "soc start (%)", "soc stop (%)", "peak amp (a)",
     "average amp (a)"
 ]
 
-def read_any(file):
-    name = file.name.lower()
-    if name.endswith(".csv"):
-        return pd.read_csv(file)
-    elif name.endswith((".xlsx", ".xls")):
-        return pd.read_excel(file)
-    else:
-        # Fallback: try both
-        try:
-            file.seek(0)
-            return pd.read_excel(file)
-        except Exception:
-            file.seek(0)
-            return pd.read_csv(file)
+alle_data = []
 
-def clean_columns(df: pd.DataFrame) -> pd.DataFrame:
-    df = df.copy()
-    df.columns = (
-        df.columns.str.strip()
-                  .str.lower()
-                  .str.replace(r"[^\x00-\x7F]+", "", regex=True)
-    )
-    return df
-
-def concat_valid(dfs):
-    valids = []
-    msgs = []
-    for i, df in enumerate(dfs, start=1):
-        df = clean_columns(df)
-        missing = [k for k in COLUMNS if k not in df.columns]
-        if missing:
-            msgs.append(f"File {i}: missing columns: {missing}")
-            continue
-        valids.append(df[COLUMNS].copy())
-        msgs.append(f"File {i}: {len(df)} rows OK")
-    return (pd.concat(valids, ignore_index=True) if valids else None), msgs
-
-if not files:
-    st.info("Upload CSV/XLSX files to get started.")
-    st.stop()
-
-raw_dfs = []
-for f in files:
+for sti in filstier:
+    print(f"\n▶ Leser fil: {sti}")
     try:
-        raw_dfs.append(read_any(f))
+        # 🎯 Bruk den robuste funksjonen her
+        df = read_any_file(sti)
+
+        # Standardiser kolonnenavn
+        df.columns = (
+            df.columns.str.strip()
+                      .str.lower()
+                      .str.replace(r"[^\x00-\x7F]+", "", regex=True)
+        )
+
+        # Sjekk manglende kolonner
+        manglende = [kol for kol in kolonner if kol not in df.columns]
+        if manglende:
+            print(f"❌ Mangler kolonner i '{os.path.basename(sti)}': {manglende}")
+            print(f"📃 Tilgjengelige kolonner: {df.columns.tolist()}")
+            continue
+
+        df = df[kolonner]
+        alle_data.append(df)
+        print(f"✅ Fil lastet inn med {len(df)} rader.")
     except Exception as e:
-        st.error(f"Error reading **{f.name}**: {e}")
+        print(f"💥 Feil ved lesing av {sti}: {e}")
 
-df, status_msgs = concat_valid(raw_dfs)
-with st.expander("Import log"):
-    for m in status_msgs:
-        st.write(m)
+if not alle_data:
+    print("\n🚫 Ingen gyldige filer ble lastet inn.")
+    exit()
 
-if df is None or df.empty:
-    st.error("No valid files/columns found.")
-    st.stop()
-
-# ---- TYPE CONVERSION ----
-# Convert time → datetime (UTC), remove tz, ensure numeric amp columns
-df["start time"] = pd.to_datetime(df["start time"], errors="coerce", utc=True)
-df["end time"] = pd.to_datetime(df["end time"], errors="coerce", utc=True)
-df = df.dropna(subset=["start time", "end time"])
-df["start time"] = df["start time"].dt.tz_localize(None)
-df["end time"] = df["end time"].dt.tz_localize(None)
-
-for col in ["average amp (a)", "peak amp (a)"]:
-    df[col] = pd.to_numeric(df[col], errors="coerce")
-df = df.dropna(subset=["average amp (a)", "peak amp (a)"])
-if df.empty:
-    st.error("All rows were invalid after cleaning.")
-    st.stop()
-
-# Available dates
-available_dates = sorted(pd.Series(df["start time"].dt.date.unique()).dropna())
-if not available_dates:
-    st.error("No dates found in the data.")
-    st.stop()
-
-default_date = random.choice(available_dates)
-chosen_date = st.date_input(
-    "Select date (from available):",
-    value=default_date,
-    min_value=available_dates[0],
-    max_value=available_dates[-1],
-    format="DD.MM.YYYY",
-)
-
-# ---- CROSS-MIDNIGHT HANDLING: split into day-sized chunks ----
-day_start = pd.Timestamp.combine(chosen_date, datetime.min.time())
-day_end   = day_start + pd.Timedelta(days=1)
-
-# Sessions overlapping the chosen day
-overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
-if overlap.empty:
-    st.warning(f"No sessions overlapping {chosen_date:%d.%m.%Y}.")
-    st.stop()
-
-rows = []
-for _, r in overlap.iterrows():
-    # Clip to this day's window
-    s = max(r["start time"], day_start)
-    e = min(r["end time"], day_end)
-
-    # If the original session spans multiple days, split at midnight boundaries
-    while s < e:
-        next_midnight = s.normalize() + pd.Timedelta(days=1)  # next 00:00
-        chunk_end = min(next_midnight, e)
-        rr = r.copy()
-        rr["clipped_start"] = s
-        rr["clipped_end"] = chunk_end
-        rows.append(rr)
-        s = chunk_end
-
-df_day = pd.DataFrame(rows)
-
-# Map timestamps to a dummy date for x-axis
-def to_day_clock(ts: pd.Timestamp) -> datetime:
-    return datetime(1970, 1, 1, ts.hour, ts.minute, ts.second)
-
-df_day["start_clock"] = df_day["clipped_start"].apply(to_day_clock)
-df_day["end_clock"]   = df_day["clipped_end"].apply(to_day_clock)
-
-# ---- PLOT ----
-fig = go.Figure()
-
-for _, row in df_day.iterrows():
-    x0, x1 = row["start_clock"], row["end_clock"]
-    y0, y1 = row["average amp (a)"], row["peak amp (a)"]
-
-    hover = (
-        f"Start: {row['clipped_start']:%H:%M} "
-        f"(orig: {row['start time']:%d.%m %H:%M})<br>"
-        f"End: {row['clipped_end']:%H:%M} "
-        f"(orig: {row['end time']:%d.%m %H:%M})<br>"
-        f"SoC Start: {row['soc start (%)']}%<br>"
-        f"SoC End: {row['soc stop (%)']}%<br>"
-        f"Avg: {y0:.1f} A<br>"
-        f"Peak: {y1:.1f} A"
-    )
-
-    fig.add_trace(go.Scatter(
-        x=[x0, x1, x1, x0, x0],
-        y=[y0, y0, y1, y1, y0],
-        fill="toself",
-        mode="lines",
-        line=dict(width=0),
-        fillcolor="rgba(100, 149, 237, 0.5)",
-        hoverinfo="text",
-        text=hover,
-        showlegend=False,
-    ))
-
-START_OF_DAY = datetime(1970, 1, 1, 0, 0, 0)
-END_OF_DAY   = datetime(1970, 1, 1, 23, 59, 59)
-
-fig.update_layout(
-    title=f"Charging sessions for {chosen_date:%d.%m.%Y} (Amps vs time of day)",
-    xaxis=dict(
-        title="Time of day",
-        type="date",
-        tickformat="%H:%M",
-        tickmode="linear",
-        dtick=3600000,  # 1 hour in ms
-        range=[START_OF_DAY, END_OF_DAY],
-    ),
-    yaxis=dict(title="Amps (A)"),
-    height=650,
-    margin=dict(l=40, r=20, t=60, b=40),
-)
-
-st.plotly_chart(fig, use_container_width=True)
-
-# ---- TABLE ----
-with st.expander("View data for selected date"):
-    table_df = df_day.sort_values("clipped_start")[
-        ["start time", "end time", "clipped_start", "clipped_end",
-         "soc start (%)", "soc stop (%)",
-         "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
-    ].reset_index(drop=True)
-    st.dataframe(table_df)
+# ... (resten av koden din som konverterer tid, filtrerer dato, og plotter)
