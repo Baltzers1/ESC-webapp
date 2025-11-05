@@ -189,12 +189,11 @@ st.markdown("Last opp en CSV/XLSX med kolonner: `start time`, `end time`, `avera
 
 uploaded = st.file_uploader("Velg fil (CSV eller Excel)", type=["csv", "xlsx", "xls"], accept_multiple_files=False)
 
-with st.sidebar:
-    st.header("Innstillinger")
-    normalize_names = st.checkbox("Normaliser kolonnenavn (strip + lower)", value=True)
-    input_tz = st.selectbox("Input tidssone (hvis timestamps uten offset)", options=["(antatt UTC)", "Europe/Oslo", "UTC", "America/New_York"], index=0)
-    chosen_date = st.date_input("Velg dato for analyse (døgn)", value=pd.Timestamp.utcnow().date())
-    preview_rows = st.number_input("Antall rader i tabell-forhåndsvisning", value=20, min_value=5, max_value=500)
+st.subheader("Analyseinnstillinger")
+normalize_names = True  # alltid normaliser kolonner
+input_tz = None          # antatt UTC
+chosen_date = st.date_input("Velg dato for analyse (døgn)", value=pd.Timestamp.utcnow().date())
+preview_rows = 20        # default forhåndsvisning
 
 if uploaded is not None:
     try:
