@@ -1,361 +1,303 @@
-# README: This is a Streamlit app for uploading, merging, and analyzing charging session data.
-# Required packages: pandas, streamlit, chardet
-# Run with: streamlit run app.py
-#
-# Test scenario:
-# - File1: CSV with semicolon separator and comma decimal (e.g., "1;2,5")
-# - File2: CSV with comma separator and dot decimal (e.g., "1,2.5")
-# Expected: App detects delimiters, previews data. For outer concat, all columns preserved with NaNs where missing. For inner, only common columns. Merged DF shows combined rows, optionally with __source_file column.
+# app.py
+"""
+Streamlit-app: modulér ladeøkt-data og plott døgnbiter for analyse.
 
+Kjør: streamlit run app.py
+Krav: pandas, plotly, streamlit
+"""
+
+import io
+from typing import List, Tuple, Dict, Optional
+from datetime import datetime, time
 import pandas as pd
+import plotly.graph_objects as go
 import streamlit as st
-from io import BytesIO
-import csv
-import os
-from typing import List, Optional, Dict, Tuple
-import numpy as np
-import chardet
 
-# --- NON-CACHED PARSING (no st.* calls inside) ---
-def _detect_encoding(file_bytes: bytes) -> str:
-    """Detect file encoding using chardet."""
-    result = chardet.detect(file_bytes[:100000])
-    return result['encoding'] or 'utf-8'
+# ---------- HJELPEFUNKTIONER ----------
 
-def _detect_delimiter_from_bytes(file_bytes: bytes, encoding: str) -> str:
-    """Detect delimiter using csv.Sniffer on decoded sample."""
-    try:
-        sample = file_bytes[:32768].decode(encoding, errors='replace')
-        sniffer = csv.Sniffer()
-        dialect = sniffer.sniff(sample, delimiters=',;\t|')
-        return dialect.delimiter
-    except:
-        sample_str = sample.replace('\n', '').replace('\r', '')
-        counts = {',': sample_str.count(','), ';': sample_str.count(';'), '\t': sample_str.count('\t'), '|': sample_str.count('|')}
-        return max(counts, key=counts.get) if max(counts.values()) > 0 else ','
-
-def _make_csv_trylist(delimiter: str, decimal: str = '.') -> List[Dict]:
-    """Create prioritized list of read_csv configurations."""
-    encodings = ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
-    configs = []
-    for enc in encodings:
-        configs.append({'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'low_memory': False})
-    for enc in encodings:
-        configs.append({'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'engine': 'python', 'on_bad_lines': 'skip'})
-    configs.append({'sep': None, 'encoding': 'utf-8', 'engine': 'python'})
-    return configs
-
-def _read_csv_fallback(file_bytes: bytes, encoding: str, delimiter: str) -> Optional[pd.DataFrame]:
-    """Fallback: read line by line if pandas fails."""
-    try:
-        text = file_bytes.decode(encoding, errors='ignore')
-        lines = text.splitlines()
-        if len(lines) < 2:
-            return None
-        header = lines[0].split(delimiter)
-        data = [line.split(delimiter) for line in lines[1:]]
-        return pd.DataFrame(data, columns=header)
-    except:
-        return None
-
-def parse_file_to_dataframe(file_name: str, file_bytes: bytes) -> Tuple[Optional[pd.DataFrame], List[str]]:
-    """Parse file to DataFrame with detailed debug log. NO Streamlit calls."""
-    debug_log = []
-    ext = os.path.splitext(file_name)[1].lower()
-
-    if ext in ['.xlsx', '.xls']:
-        try:
-            df = pd.read_excel(BytesIO(file_bytes))
-            debug_log.append(f"Excel read success: {len(df)} rows")
-            return df, debug_log
-        except Exception as e:
-            debug_log.append(f"Excel failed: {str(e)}")
-            return None, debug_log
-
-    # CSV/TXT
-    encoding = _detect_encoding(file_bytes)
-    debug_log.append(f"Detected encoding: {encoding}")
-
-    delimiter = _detect_delimiter_from_bytes(file_bytes, encoding)
-    debug_log.append(f"Detected delimiter: '{delimiter}'")
-
-    for decimal in [',', '.']:
-        configs = _make_csv_trylist(delimiter, decimal)
-        for i, config in enumerate(configs):
-            try:
-                buffer = BytesIO(file_bytes)
-                df = pd.read_csv(buffer, **config)
-                if not df.empty and len(df.columns) > 1:
-                    debug_log.append(f"Success config #{i}: sep='{config.get('sep')}', decimal='{decimal}', enc='{config.get('encoding')}'")
-                    return df, debug_log
-            except Exception as e:
-                debug_log.append(f"Config #{i} failed: {str(e)[:100]}")
-
-    # Final fallback
-    df_fallback = _read_csv_fallback(file_bytes, encoding, delimiter)
-    if df_fallback is not None:
-        debug_log.append("Fallback line-by-line success")
-        return df_fallback, debug_log
-
-    debug_log.append("All parsing attempts failed")
-    return None, debug_log
-
-# --- CACHED WRAPPER (only returns data, no widgets) ---
-@st.cache_data
-def _cached_parse_file(file_name: str, file_bytes: bytes) -> Tuple[Optional[pd.DataFrame], List[str]]:
-    """Cached parsing: returns (df, debug_log) — NO st.* calls."""
-    return parse_file_to_dataframe(file_name, file_bytes)
-
-# --- UI-FACING READER (widgets here, safe) ---
-def read_any_file_from_bytes(file_name: str, file_bytes: bytes) -> Optional[pd.DataFrame]:
-    """Read file with UI debug toggle."""
-    df, debug_log = _cached_parse_file(file_name, file_bytes)
-
-    if df is not None:
-        st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns")
-        if st.checkbox(f"Show debug log for {file_name}", key=f"debug_{file_name}"):
-            st.code("\n".join(debug_log))
-        return df
-    else:
-        st.error(f"Failed to read {file_name}")
-        if st.checkbox(f"Show error details for {file_name}", key=f"error_{file_name}"):
-            st.code("\n".join(debug_log[-10:]))
-        return None
-
-# --- REST OF THE APP (unchanged logic) ---
-def concat_dataframes(dfs: List[pd.DataFrame], how: str = 'outer', add_source: bool = False, sources: List[str] = None, normalize_cols: bool = False) -> pd.DataFrame:
-    """Concatenate DataFrames with options."""
-    if normalize_cols:
-        for df in dfs:
-            df.columns = df.columns.str.strip().str.lower()
-    if add_source and sources:
-        for df, src in zip(dfs, sources):
-            df['__source_file'] = src
-    return pd.concat(dfs, axis=0, join=how, ignore_index=True)
-
-def analyze_charging_data(df: pd.DataFrame) -> Tuple[Dict, pd.DataFrame]:
-    """Perform comprehensive analysis on charging session data."""
-    analysis = {}
+def normalize_columns(df: pd.DataFrame, lower: bool = True, strip: bool = True) -> pd.DataFrame:
+    """Normaliser kolonnenavn: strip og/eller lower."""
+    cols = df.columns
+    if strip:
+        cols = [c.strip() if isinstance(c, str) else c for c in cols]
+    if lower:
+        cols = [c.lower() if isinstance(c, str) else c for c in cols]
     df = df.copy()
+    df.columns = cols
+    return df
 
-    df['Start Time'] = pd.to_datetime(df['Start Time'], errors='coerce', utc=True)
-    df['End Time'] = pd.to_datetime(df['End Time'], errors='coerce', utc=True)
-    df['Duration'] = (df['End Time'] - df['Start Time']).dt.total_seconds() / 60
-
-    analysis['total_sessions'] = len(df)
-    analysis['total_energy_kwh'] = df['Charged Energy (kWh)'].sum()
-    analysis['avg_energy_kwh'] = df['Charged Energy (kWh)'].mean()
-    analysis['avg_duration_min'] = df['Duration'].mean()
-    analysis['avg_power_kw'] = df['Average Power (kW)'].mean()
-
-    charger_counts = df['Charger Serial Number'].value_counts()
-    analysis['unique_chargers'] = len(charger_counts)
-    analysis['sessions_per_charger'] = charger_counts.to_dict()
-
-    df['date'] = df['Start Time'].dt.date
-    daily_sessions = df['date'].value_counts().sort_index()
-    analysis['daily_sessions'] = daily_sessions.to_dict()
-
-    analysis['connector_distribution'] = df['Connector'].value_counts().to_dict()
-
-    error_cols = ['Stop Reason', 'OCPP Errorcode', 'HYC Errorcode']
-    analysis['error_summary'] = {}
-    for col in error_cols:
-        if col in df.columns:
-            analysis['error_summary'][col] = df[col].value_counts().head(10).to_dict()
-
-    analysis['top_cars'] = df['Car'].value_counts().head(10).to_dict()
-
-    return analysis, df
-
-def plot_analysis(analysis: Dict, df: pd.DataFrame):
-    """Display plots for analysis."""
-    col1, col2 = st.columns(2)
-    with col1:
-        st.subheader("Daily Charging Sessions")
-        if 'daily_sessions' in analysis:
-            dates = list(analysis['daily_sessions'].keys())
-            counts = list(analysis['daily_sessions'].values())
-            chart_df = pd.DataFrame({'Date': dates, 'Sessions': counts})
-            st.line_chart(chart_df.set_index('Date'))
-    with col2:
-        st.subheader("Energy per Session (kWh)")
-        hist_data = df['Charged Energy (kWh)'].dropna()
-        if len(hist_data) > 0:
-            st.bar_chart(pd.cut(hist_data, bins=30).value_counts().sort_index())
-
-    col3, col4 = st.columns(2)
-    with col3:
-        st.subheader("Connector Type Distribution")
-        if 'connector_distribution' in analysis:
-            st.bar_chart(pd.Series(analysis['connector_distribution']))
-    with col4:
-        st.subheader("Top 10 Car Models")
-        if 'top_cars' in analysis:
-            st.bar_chart(pd.Series(analysis['top_cars']))
-
-    if analysis.get('error_summary'):
-        st.subheader("Top Stop Reasons")
-        stop_reasons = analysis['error_summary'].get('Stop Reason', {})
-        if stop_reasons:
-            st.bar_chart(pd.Series(stop_reasons))
-
-def main():
-    st.set_page_config(page_title="Charging Data Analyzer", layout="wide")
-    st.title("EV Charging Session Analyzer")
-
-    # Configuration
-    st.markdown("### Configuration")
-    col1, col2 = st.columns(2)
-    with col1:
-        how = st.selectbox("Merge Type", ['outer', 'inner'], index=0)
-        add_source = st.checkbox("Add __source_file Column", value=True)
-        normalize_cols = st.checkbox("Normalize Column Names (strip & lower)", value=True)
-    with col2:
-        preview_rows = st.number_input("Preview Rows", min_value=5, max_value=100, value=10, step=5)
-
-    st.markdown("### Filters (applied after merge)")
-    col3, col4 = st.columns(2)
-    with col3:
-        min_energy = st.slider("Min Energy (kWh)", 0.0, 100.0, 0.0, 0.5)
-        max_energy = st.slider("Max Energy (kWh)", 0.0, 200.0, 200.0, 0.5)
-    with col4:
-        st.write("Charger filter available after first merge")
-
-    # Upload
-    st.markdown("### Upload Files")
-    uploaded_files = st.file_uploader(
-        "Upload Charging Session Files (CSV, TXT, XLSX, XLS)",
-        accept_multiple_files=True,
-        type=['csv', 'txt', 'xlsx', 'xls'],
-        help="Drag and drop multiple files"
-    )
-
-    if not uploaded_files:
-        st.info("Upload one or more files to start analysis.")
-        st.stop()
-
-    # Process files
-    successful_dfs = []
-    successful_names = []
-    failed_names = []
-
-    st.markdown("### File Previews")
-    tabs = st.tabs([f.name for f in uploaded_files])
-
-    for i, file in enumerate(uploaded_files):
-        with tabs[i]:
-            st.subheader(f"File: {file.name}")
-            file_bytes = file.read()
-            df = read_any_file_from_bytes(file.name, file_bytes)
-            if df is not None:
-                st.dataframe(df.head(5), use_container_width=True)
-                csv_bytes = df.to_csv(index=False, encoding='utf-8-sig').encode()
-                st.download_button(
-                    f"Download {file.name}",
-                    csv_bytes,
-                    file_name=file.name,
-                    mime='text/csv',
-                    use_container_width=True
-                )
-                successful_dfs.append(df)
-                successful_names.append(file.name)
+def parse_datetimes(df: pd.DataFrame, cols: List[str], input_tz: Optional[str] = None) -> pd.DataFrame:
+    """
+    Parse given datetime columns robustt.
+    - If timestamps include tz info, parse with utc=True and convert to UTC.
+    - Else: if input_tz provided, localize to that tz then convert to UTC.
+    - Return naive UTC datetimes (tz removed).
+    """
+    df = df.copy()
+    for c in cols:
+        # Try parse (allow offsets)
+        parsed = pd.to_datetime(df[c], errors="coerce", utc=True)  # will set tzinfo if offset present
+        # parsed is tz-aware (UTC) if original had offset, otherwise NaT
+        # If parsed has many NaT, try without utc to parse naive strings
+        need_localize_mask = parsed.isna() & df[c].notna()
+        if need_localize_mask.any():
+            # parse without forcing utc
+            parsed2 = pd.to_datetime(df.loc[need_localize_mask, c], errors="coerce")
+            if input_tz:
+                # localize naive datetimes to input_tz then convert to UTC
+                parsed2 = parsed2.dt.tz_localize(input_tz, ambiguous="NaT", nonexistent="NaT").dt.tz_convert("UTC")
             else:
-                failed_names.append(file.name)
+                # assume naive are already UTC
+                parsed2 = parsed2.dt.tz_localize("UTC")
+            parsed.loc[need_localize_mask] = parsed2
+        # Now parsed should be tz-aware UTC where possible; drop tzinfo to naive UTC
+        parsed = parsed.dt.tz_convert("UTC").dt.tz_localize(None)
+        df[c] = parsed
+    return df
 
-    if not successful_dfs:
-        st.error("No files were successfully loaded.")
+def numeric_cols(df: pd.DataFrame, cols: List[str]) -> pd.DataFrame:
+    """Konverter oppgitte kolonner til numerisk med errors->NaN."""
+    df = df.copy()
+    for c in cols:
+        df[c] = pd.to_numeric(df[c], errors="coerce")
+    return df
+
+def filter_valid_rows(df: pd.DataFrame, datetime_cols: List[str], numeric_cols_list: List[str]) -> pd.DataFrame:
+    """Fjern rader som mangler viktige datetime eller numeric-verdier."""
+    df = df.copy()
+    df = df.dropna(subset=datetime_cols + numeric_cols_list)
+    return df
+
+def split_rows_over_day(df: pd.DataFrame, start_col: str, end_col: str, day: datetime.date) -> pd.DataFrame:
+    """
+    For hver rad som overlaps 'day' (midnight..midnight+1), split i biter som ikke går over midnatt.
+    Returns DataFrame with added columns:
+      - clipped_start, clipped_end (naive UTC datetimes within chosen day window)
+      - start_time_orig, end_time_orig (original start/end)
+    """
+    # day window in UTC naive (we assume df's datetimes are naive UTC after parse_datetimes)
+    day_start = pd.Timestamp.combine(day, time.min)
+    day_end = day_start + pd.Timedelta(days=1)
+
+    mask = (df[start_col] < day_end) & (df[end_col] > day_start)
+    overlap = df.loc[mask].copy()
+    if overlap.empty:
+        return pd.DataFrame([])  # caller will handle empty
+
+    rows = []
+    for _, r in overlap.iterrows():
+        s = max(r[start_col], day_start)
+        e = min(r[end_col], day_end)
+        # split chunks at midnight boundaries within s..e
+        while s < e:
+            next_midnight = (s.normalize() + pd.Timedelta(days=1))
+            chunk_end = min(next_midnight, e)
+            rr = r.copy()
+            rr["clipped_start"] = s
+            rr["clipped_end"] = chunk_end
+            # keep original for hover
+            rr["start_time_orig"] = r[start_col]
+            rr["end_time_orig"] = r[end_col]
+            rows.append(rr)
+            s = chunk_end
+    if not rows:
+        return pd.DataFrame([])
+    df_day = pd.DataFrame(rows)
+    return df_day.reset_index(drop=True)
+
+def to_day_clock(ts: pd.Timestamp) -> datetime:
+    """Convert timestamp to dummy-date clock for x-axis (1970-01-01 hh:mm:ss)."""
+    return datetime(1970, 1, 1, ts.hour, ts.minute, ts.second, ts.microsecond // 1000)
+
+def build_plot(df_day: pd.DataFrame,
+               avg_col: str = "average amp (a)",
+               peak_col: str = "peak amp (a)",
+               start_col: str = "clipped_start",
+               end_col: str = "clipped_end") -> go.Figure:
+    """
+    Build a Plotly figure where each clipped row is drawn as a horizontal strip
+    from clipped_start -> clipped_end with y between avg and peak.
+    """
+    fig = go.Figure()
+    if df_day.empty:
+        fig.update_layout(title="Ingen data å vise")
+        return fig
+
+    # Prepare dummy-clock datetimes for x-axis
+    df_day = df_day.copy()
+    df_day["x0"] = df_day[start_col].apply(to_day_clock)
+    df_day["x1"] = df_day[end_col].apply(to_day_clock)
+
+    # Add a shape (rectangle) per row to represent avg->peak band
+    for i, row in df_day.iterrows():
+        x0, x1 = row["x0"], row["x1"]
+        y0, y1 = float(row[avg_col]), float(row[peak_col])
+        hover = (
+            f"Start (klipp): {row['clipped_start']:%H:%M} (oppr.: {row['start_time_orig']:%d.%m %H:%M})<br>"
+            f"Slutt (klipp): {row['clipped_end']:%H:%M} (oppr.: {row['end_time_orig']:%d.%m %H:%M})<br>"
+            f"SoC start: {row.get('soc start (%)','NA')}%<br>"
+            f"SoC slutt: {row.get('soc stop (%)','NA')}%<br>"
+            f"Avg: {y0:.1f} A<br>"
+            f"Peak: {y1:.1f} A<br>"
+        )
+        # rectangle as shape
+        fig.add_shape(
+            type="rect",
+            x0=x0, x1=x1,
+            y0=y0, y1=y1,
+            line=dict(width=0),
+            fillcolor="LightSkyBlue",
+            opacity=0.45,
+            layer="below",
+        )
+        # invisible scatter for hover
+        fig.add_trace(go.Scatter(
+            x=[x0, x1],
+            y=[y0, y1],
+            mode="lines",
+            hoverinfo="text",
+            text=[hover, hover],
+            showlegend=False,
+            line=dict(width=0.5),
+        ))
+
+    # layout x-axis range from 00:00 to 23:59:59 on dummy date
+    START_OF_DAY = datetime(1970, 1, 1, 0, 0, 0)
+    END_OF_DAY = datetime(1970, 1, 1, 23, 59, 59)
+    fig.update_layout(
+        title="Ladeøkter (Ampere vs tid på døgnet)",
+        xaxis=dict(
+            title="Tid på døgnet",
+            type="date",
+            tickformat="%H:%M",
+            tickmode="linear",
+            dtick=3600000,  # 1 time i ms
+            range=[START_OF_DAY, END_OF_DAY],
+        ),
+        yaxis=dict(title="Ampere (A)"),
+        margin=dict(l=50, r=20, t=60, b=50),
+        height=450,
+    )
+    return fig
+
+# ---------- STREAMLIT UI ----------
+
+st.set_page_config(page_title="Analyse: ladeøkter per døgn", layout="wide")
+st.title("Analyse: del opp ladeøkter per døgn og visualiser")
+
+st.markdown("Last opp en CSV/XLSX med kolonner: `start time`, `end time`, `average amp (a)`, `peak amp (a)` og evt. `soc start (%)`, `soc stop (%)`, `charged energy (kwh)`.")
+
+uploaded = st.file_uploader("Velg fil (CSV eller Excel)", type=["csv", "xlsx", "xls"], accept_multiple_files=False)
+
+with st.sidebar:
+    st.header("Innstillinger")
+    normalize_names = st.checkbox("Normaliser kolonnenavn (strip + lower)", value=True)
+    input_tz = st.selectbox("Input tidssone (hvis timestamps uten offset)", options=["(antatt UTC)", "Europe/Oslo", "UTC", "America/New_York"], index=0)
+    chosen_date = st.date_input("Velg dato for analyse (døgn)", value=pd.Timestamp.utcnow().date())
+    preview_rows = st.number_input("Antall rader i tabell-forhåndsvisning", value=20, min_value=5, max_value=500)
+
+if uploaded is not None:
+    try:
+        b = uploaded.getvalue()
+        # enkel leser: la pandas sniffe
+        if uploaded.name.lower().endswith((".xlsx", ".xls")):
+            df = pd.read_excel(io.BytesIO(b))
+        else:
+            # csv: la pandas auto-sniffe (sep=None via engine='python')
+            df = pd.read_csv(io.BytesIO(b), sep=None, engine="python", encoding="utf-8-sig", low_memory=False)
+    except Exception as e:
+        st.error(f"Kunne ikke lese fil: {e}")
         st.stop()
 
-    # Merge
-    st.markdown("### Merge & Analyze")
-    if st.button("Merge & Analyze All Files", type="primary", use_container_width=True):
-        with st.spinner("Merging and analyzing..."):
-            merged_df = concat_dataframes(
-                successful_dfs,
-                how=how,
-                add_source=add_source,
-                sources=successful_names,
-                normalize_cols=normalize_cols
-            )
+    if normalize_names:
+        df = normalize_columns(df)
 
-            filtered_df = merged_df.copy()
-            if min_energy > 0:
-                filtered_df = filtered_df[filtered_df['Charged Energy (kWh)'] >= min_energy]
-            if max_energy < 200:
-                filtered_df = filtered_df[filtered_df['Charged Energy (kWh)'] <= max_energy]
+    # For consistency, map expected column names if user didn't normalize
+    # Define canonical names we'll use in code
+    def find_col(df, candidates):
+        for c in candidates:
+            if c in df.columns:
+                return c
+        return None
 
-            st.session_state.merged_df = filtered_df
-            st.session_state.charger_options = sorted(filtered_df['Charger Serial Number'].unique())
+    start_col = find_col(df, ["start time", "start_time", "start"])
+    end_col = find_col(df, ["end time", "end_time", "end"])
+    avg_col = find_col(df, ["average amp (a)", "average_amp_a", "avg_amp", "avg_amp(a)"])
+    peak_col = find_col(df, ["peak amp (a)", "peak_amp_a", "peak_amp(a)"])
+    soc_start = find_col(df, ["soc start (%)", "soc_start", "soc_start (%)"])
+    soc_stop = find_col(df, ["soc stop (%)", "soc_stop", "soc_stop (%)"])
+    energy_col = find_col(df, ["charged energy (kwh)", "charged_energy_kwh", "charged energy"])
 
-    if 'merged_df' in st.session_state:
-        df = st.session_state.merged_df
+    missing = []
+    for name, val in [("start time", start_col), ("end time", end_col), ("average amp", avg_col), ("peak amp", peak_col)]:
+        if val is None:
+            missing.append(name)
+    if missing:
+        st.error(f"Kan ikke finne nødvendige kolonner: {missing}")
+        st.stop()
 
-        if 'charger_options' in st.session_state:
-            selected_chargers = st.multiselect(
-                "Filter by Charger Serial Number",
-                options=st.session_state.charger_options,
-                default=[]
-            )
-            if selected_chargers:
-                df = df[df['Charger Serial Number'].isin(selected_chargers)]
+    # Parse datetimes robustly
+    tz_option = None if input_tz == "(antatt UTC)" else input_tz
+    df = parse_datetimes(df, [start_col, end_col], input_tz=tz_option)
 
-        st.markdown(f"### Analysis Results ({len(df)} sessions)")
+    # numeric
+    df = numeric_cols(df, [avg_col, peak_col])
 
-        col1, col2, col3, col4 = st.columns(4)
-        with col1:
-            st.metric("Total Energy", f"{df['Charged Energy (kWh)'].sum():.1f} kWh")
-        with col2:
-            st.metric("Avg Energy", f"{df['Charged Energy (kWh)'].mean():.2f} kWh")
-        with col3:
-            st.metric("Total Sessions", len(df))
-        with col4:
-            st.metric("Unique Chargers", df['Charger Serial Number'].nunique())
+    # drop invalid rows
+    df = filter_valid_rows(df, [start_col, end_col], [avg_col, peak_col])
 
-        analysis, analyzed_df = analyze_charging_data(df)
-        plot_analysis(analysis, analyzed_df)
+    if df.empty:
+        st.warning("Ingen gyldige økter etter rensing.")
+        st.stop()
 
-        with st.expander("Detailed Statistics"):
-            st.write("### Energy Distribution")
-            st.dataframe(df['Charged Energy (kWh)'].describe())
-            st.write("### Duration Distribution (minutes)")
-            st.dataframe(analyzed_df['Duration'].describe())
-            st.write("### Charger Utilization")
-            st.dataframe(df['Charger Serial Number'].value_counts().head(20))
+    st.success(f"Lest {uploaded.name} — {len(df)} gyldige økter")
 
-        st.markdown("### Download Merged Data")
-        col1, col2 = st.columns(2)
-        with col1:
-            csv_merged = '\ufeff' + df.to_csv(index=False, encoding='utf-8')
-            st.download_button(
-                "Download as CSV (UTF-8 BOM)",
-                csv_merged.encode('utf-8'),
-                "merged_charging_data.csv",
-                "text/csv",
-                use_container_width=True
-            )
-        with col2:
-            excel_buffer = BytesIO()
-            with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
-                df.to_excel(writer, index=False, sheet_name='Charging Sessions')
-            excel_buffer.seek(0)
-            st.download_button(
-                "Download as Excel",
-                excel_buffer,
-                "merged_charging_data.xlsx",
-                "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-                use_container_width=True
-            )
+    # Split into day clips
+    df_day = split_rows_over_day(df, start_col, end_col, chosen_date)
+    if df_day.empty:
+        st.warning(f"🚫 Ingen økter som overlapper {chosen_date:%d.%m.%Y}.")
+        st.stop()
 
-        with st.expander("View Raw Merged Data"):
-            st.dataframe(df.head(preview_rows), use_container_width=True)
+    # Ensure expected columns exist for plotting/hover
+    # Rename our discovered columns to canonical keys used in plot function
+    df_day = df_day.rename(columns={
+        start_col: "start time",
+        end_col: "end time",
+        avg_col: "average amp (a)",
+        peak_col: "peak amp (a)",
+        soc_start: "soc start (%)" if soc_start else "soc start (%)",
+        soc_stop: "soc stop (%)" if soc_stop else "soc stop (%)",
+        energy_col: "charged energy (kwh)" if energy_col else "charged energy (kwh)",
+    })
 
-        st.info(f"""
-        **Summary**: {len(df)} sessions from {len(successful_names)} files. 
-        Failed: {len(failed_names)} ({', '.join(failed_names) if failed_names else 'none'}).
-        Time range: {df['Start Time'].min().date()} to {df['End Time'].max().date()}.
-        """)
+    # Build plot
+    fig = build_plot(df_day,
+                     avg_col="average amp (a)",
+                     peak_col="peak amp (a)",
+                     start_col="clipped_start",
+                     end_col="clipped_end")
 
-if __name__ == "__main__":
-    # chardet is now in requirements.txt — no install check needed
-    main()
+    st.plotly_chart(fig, use_container_width=True)
+
+    # Table preview
+    st.subheader("Se data for valgt dato (klippede økter)")
+    table_cols = ["start time", "end time", "clipped_start", "clipped_end",
+                  "soc start (%)", "soc stop (%)", "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
+    # filter available columns
+    table_cols = [c for c in table_cols if c in df_day.columns]
+    table_df = df_day.sort_values("clipped_start")[table_cols].reset_index(drop=True)
+    st.dataframe(table_df.head(preview_rows), use_container_width=True)
+
+    # Downloads
+    csv_bytes = table_df.to_csv(index=False).encode("utf-8-sig")
+    st.download_button("Last ned klippet data (CSV)", csv_bytes, file_name=f"clipped_{chosen_date}.csv", mime="text/csv")
+    try:
+        buf = io.BytesIO()
+        table_df.to_excel(buf, index=False)
+        st.download_button("Last ned klippet data (Excel)", buf.getvalue(), file_name=f"clipped_{chosen_date}.xlsx",
+                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    except Exception:
+        pass
+
+else:
+    st.info("Last opp en fil for å komme i gang.")
