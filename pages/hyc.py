@@ -1,5 +1,5 @@
 # README: This is a Streamlit app for uploading, merging, and analyzing charging session data.
-# Required packages: pandas, streamlit
+# Required packages: pandas, streamlit, chardet
 # Run with: streamlit run app.py
 #
 # Test scenario:
@@ -12,17 +12,16 @@ import streamlit as st
 from io import BytesIO
 import csv
 import os
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Tuple
 import numpy as np
 import chardet
 
-@st.cache_data
+# --- NON-CACHED PARSING (no st.* calls inside) ---
 def _detect_encoding(file_bytes: bytes) -> str:
     """Detect file encoding using chardet."""
-    result = chardet.detect(file_bytes[:100000])  # Sample first 100KB
+    result = chardet.detect(file_bytes[:100000])
     return result['encoding'] or 'utf-8'
 
-@st.cache_data
 def _detect_delimiter_from_bytes(file_bytes: bytes, encoding: str) -> str:
     """Detect delimiter using csv.Sniffer on decoded sample."""
     try:
@@ -31,96 +30,99 @@ def _detect_delimiter_from_bytes(file_bytes: bytes, encoding: str) -> str:
         dialect = sniffer.sniff(sample, delimiters=',;\t|')
         return dialect.delimiter
     except:
-        # Fallback: count common delimiters
         sample_str = sample.replace('\n', '').replace('\r', '')
         counts = {',': sample_str.count(','), ';': sample_str.count(';'), '\t': sample_str.count('\t'), '|': sample_str.count('|')}
         return max(counts, key=counts.get) if max(counts.values()) > 0 else ','
 
 def _make_csv_trylist(delimiter: str, decimal: str = '.') -> List[Dict]:
     """Create prioritized list of read_csv configurations."""
-    base_configs = [
-        {'sep': delimiter, 'decimal': decimal, 'encoding': 'utf-8', 'engine': 'python', 'on_bad_lines': 'skip'},
-        {'sep': delimiter, 'decimal': decimal, 'encoding': 'utf-8-sig', 'engine': 'python', 'on_bad_lines': 'skip'},
-        {'sep': delimiter, 'decimal': decimal, 'encoding': 'latin1', 'engine': 'python', 'on_bad_lines': 'skip'},
-        {'sep': delimiter, 'decimal': decimal, 'encoding': 'cp1252', 'engine': 'python', 'on_bad_lines': 'skip'},
-    ]
-    # Add engine='c' variants for speed (if no bad lines)
-    c_configs = [
-        {'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'low_memory': False}
-        for enc in ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
-    ]
-    return c_configs + base_configs + [
-        {'sep': None, 'encoding': 'utf-8', 'engine': 'python'},
-        {'sep': None, 'encoding': 'utf-8-sig', 'engine': 'python'},
-    ]
+    encodings = ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
+    configs = []
+    for enc in encodings:
+        configs.append({'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'low_memory': False})
+    for enc in encodings:
+        configs.append({'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'engine': 'python', 'on_bad_lines': 'skip'})
+    configs.append({'sep': None, 'encoding': 'utf-8', 'engine': 'python'})
+    return configs
 
-@st.cache_data
-def read_any_file_from_bytes(file_name: str, file_bytes: bytes) -> Optional[pd.DataFrame]:
-    """Read file (CSV/TXT/XLSX/XLS) with robust parsing and encoding/delimiter detection."""
-    ext = os.path.splitext(file_name)[1].lower()
-    debug_info = []
-
+def _read_csv_fallback(file_bytes: bytes, encoding: str, delimiter: str) -> Optional[pd.DataFrame]:
+    """Fallback: read line by line if pandas fails."""
     try:
-        if ext in ['.xlsx', '.xls']:
-            df = pd.read_excel(BytesIO(file_bytes))
-            st.success(f"Excel loaded: {len(df)} rows, {len(df.columns)} cols")
-            return df
-
-        elif ext in ['.csv', '.txt']:
-            # Detect encoding
-            encoding = _detect_encoding(file_bytes)
-            debug_info.append(f"Detected encoding: {encoding}")
-
-            # Read sample for delimiter
-            try:
-                sample = file_bytes[:32768].decode(encoding, errors='replace')
-                delimiter = _detect_delimiter_from_bytes(file_bytes, encoding)
-                debug_info.append(f"Detected delimiter: '{delimiter}'")
-            except:
-                delimiter = ','
-                debug_info.append("Delimiter detection failed, using ','")
-
-            # Try decimal variants
-            for decimal in [',', '.']:
-                configs = _make_csv_trylist(delimiter, decimal)
-                for i, config in enumerate(configs):
-                    config['encoding'] = config.get('encoding', encoding)
-                    try:
-                        buffer = BytesIO(file_bytes)
-                        df = pd.read_csv(buffer, **config)
-                        if not df.empty and len(df.columns) > 1:
-                            debug_info.append(f"Success with config #{i}: sep='{config['sep']}', decimal='{decimal}', encoding='{config['encoding']}'")
-                            st.success(f"CSV loaded: {len(df)} rows, {len(df.columns)} cols")
-                            if st.checkbox(f"Show debug info for {file_name}", key=f"debug_{file_name}"):
-                                st.code("\n".join(debug_info))
-                            return df
-                    except Exception as e:
-                        debug_info.append(f"Config #{i} failed: {str(e)[:100]}")
-                        continue
-
-            # Final fallback: read line by line
-            try:
-                lines = file_bytes.decode(encoding, errors='ignore').splitlines()
-                if len(lines) > 1:
-                    header = lines[0].split(delimiter)
-                    data = [line.split(delimiter) for line in lines[1:]]
-                    df = pd.DataFrame(data, columns=header)
-                    st.warning(f"Fallback line-by-line read: {len(df)} rows")
-                    return df
-            except:
-                pass
-
-            raise ValueError("All CSV parsing attempts failed")
-
-        else:
-            raise ValueError("Unsupported file type")
-
-    except Exception as e:
-        st.error(f"Error reading {file_name}: {str(e)}")
-        if st.checkbox(f"Show detailed error for {file_name}", key=f"error_{file_name}"):
-            st.code("\n".join(debug_info[-10:]))  # Show last 10 debug lines
+        text = file_bytes.decode(encoding, errors='ignore')
+        lines = text.splitlines()
+        if len(lines) < 2:
+            return None
+        header = lines[0].split(delimiter)
+        data = [line.split(delimiter) for line in lines[1:]]
+        return pd.DataFrame(data, columns=header)
+    except:
         return None
 
+def parse_file_to_dataframe(file_name: str, file_bytes: bytes) -> Tuple[Optional[pd.DataFrame], List[str]]:
+    """Parse file to DataFrame with detailed debug log. NO Streamlit calls."""
+    debug_log = []
+    ext = os.path.splitext(file_name)[1].lower()
+
+    if ext in ['.xlsx', '.xls']:
+        try:
+            df = pd.read_excel(BytesIO(file_bytes))
+            debug_log.append(f"Excel read success: {len(df)} rows")
+            return df, debug_log
+        except Exception as e:
+            debug_log.append(f"Excel failed: {str(e)}")
+            return None, debug_log
+
+    # CSV/TXT
+    encoding = _detect_encoding(file_bytes)
+    debug_log.append(f"Detected encoding: {encoding}")
+
+    delimiter = _detect_delimiter_from_bytes(file_bytes, encoding)
+    debug_log.append(f"Detected delimiter: '{delimiter}'")
+
+    for decimal in [',', '.']:
+        configs = _make_csv_trylist(delimiter, decimal)
+        for i, config in enumerate(configs):
+            try:
+                buffer = BytesIO(file_bytes)
+                df = pd.read_csv(buffer, **config)
+                if not df.empty and len(df.columns) > 1:
+                    debug_log.append(f"Success config #{i}: sep='{config.get('sep')}', decimal='{decimal}', enc='{config.get('encoding')}'")
+                    return df, debug_log
+            except Exception as e:
+                debug_log.append(f"Config #{i} failed: {str(e)[:100]}")
+
+    # Final fallback
+    df_fallback = _read_csv_fallback(file_bytes, encoding, delimiter)
+    if df_fallback is not None:
+        debug_log.append("Fallback line-by-line success")
+        return df_fallback, debug_log
+
+    debug_log.append("All parsing attempts failed")
+    return None, debug_log
+
+# --- CACHED WRAPPER (only returns data, no widgets) ---
+@st.cache_data
+def _cached_parse_file(file_name: str, file_bytes: bytes) -> Tuple[Optional[pd.DataFrame], List[str]]:
+    """Cached parsing: returns (df, debug_log) — NO st.* calls."""
+    return parse_file_to_dataframe(file_name, file_bytes)
+
+# --- UI-FACING READER (widgets here, safe) ---
+def read_any_file_from_bytes(file_name: str, file_bytes: bytes) -> Optional[pd.DataFrame]:
+    """Read file with UI debug toggle."""
+    df, debug_log = _cached_parse_file(file_name, file_bytes)
+
+    if df is not None:
+        st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns")
+        if st.checkbox(f"Show debug log for {file_name}", key=f"debug_{file_name}"):
+            st.code("\n".join(debug_log))
+        return df
+    else:
+        st.error(f"Failed to read {file_name}")
+        if st.checkbox(f"Show error details for {file_name}", key=f"error_{file_name}"):
+            st.code("\n".join(debug_log[-10:]))
+        return None
+
+# --- REST OF THE APP (unchanged logic) ---
 def concat_dataframes(dfs: List[pd.DataFrame], how: str = 'outer', add_source: bool = False, sources: List[str] = None, normalize_cols: bool = False) -> pd.DataFrame:
     """Concatenate DataFrames with options."""
     if normalize_cols:
@@ -131,43 +133,37 @@ def concat_dataframes(dfs: List[pd.DataFrame], how: str = 'outer', add_source: b
             df['__source_file'] = src
     return pd.concat(dfs, axis=0, join=how, ignore_index=True)
 
-def analyze_charging_data(df: pd.DataFrame) -> Dict:
+def analyze_charging_data(df: pd.DataFrame) -> Tuple[Dict, pd.DataFrame]:
     """Perform comprehensive analysis on charging session data."""
     analysis = {}
+    df = df.copy()
 
-    # Parse datetime
     df['Start Time'] = pd.to_datetime(df['Start Time'], errors='coerce', utc=True)
     df['End Time'] = pd.to_datetime(df['End Time'], errors='coerce', utc=True)
-    df['Duration'] = (df['End Time'] - df['Start Time']).dt.total_seconds() / 60  # minutes
+    df['Duration'] = (df['End Time'] - df['Start Time']).dt.total_seconds() / 60
 
-    # Basic stats
     analysis['total_sessions'] = len(df)
     analysis['total_energy_kwh'] = df['Charged Energy (kWh)'].sum()
     analysis['avg_energy_kwh'] = df['Charged Energy (kWh)'].mean()
     analysis['avg_duration_min'] = df['Duration'].mean()
     analysis['avg_power_kw'] = df['Average Power (kW)'].mean()
 
-    # Charger utilization
     charger_counts = df['Charger Serial Number'].value_counts()
     analysis['unique_chargers'] = len(charger_counts)
     analysis['sessions_per_charger'] = charger_counts.to_dict()
 
-    # Time-based
     df['date'] = df['Start Time'].dt.date
     daily_sessions = df['date'].value_counts().sort_index()
     analysis['daily_sessions'] = daily_sessions.to_dict()
 
-    # Connector types
     analysis['connector_distribution'] = df['Connector'].value_counts().to_dict()
 
-    # Error analysis
     error_cols = ['Stop Reason', 'OCPP Errorcode', 'HYC Errorcode']
     analysis['error_summary'] = {}
     for col in error_cols:
         if col in df.columns:
             analysis['error_summary'][col] = df[col].value_counts().head(10).to_dict()
 
-    # Car models
     analysis['top_cars'] = df['Car'].value_counts().head(10).to_dict()
 
     return analysis, df
@@ -175,7 +171,6 @@ def analyze_charging_data(df: pd.DataFrame) -> Dict:
 def plot_analysis(analysis: Dict, df: pd.DataFrame):
     """Display plots for analysis."""
     col1, col2 = st.columns(2)
-
     with col1:
         st.subheader("Daily Charging Sessions")
         if 'daily_sessions' in analysis:
@@ -183,7 +178,6 @@ def plot_analysis(analysis: Dict, df: pd.DataFrame):
             counts = list(analysis['daily_sessions'].values())
             chart_df = pd.DataFrame({'Date': dates, 'Sessions': counts})
             st.line_chart(chart_df.set_index('Date'))
-
     with col2:
         st.subheader("Energy per Session (kWh)")
         hist_data = df['Charged Energy (kWh)'].dropna()
@@ -195,13 +189,12 @@ def plot_analysis(analysis: Dict, df: pd.DataFrame):
         st.subheader("Connector Type Distribution")
         if 'connector_distribution' in analysis:
             st.bar_chart(pd.Series(analysis['connector_distribution']))
-
     with col4:
         st.subheader("Top 10 Car Models")
         if 'top_cars' in analysis:
             st.bar_chart(pd.Series(analysis['top_cars']))
 
-    if 'error_summary' in analysis and analysis['error_summary']:
+    if analysis.get('error_summary'):
         st.subheader("Top Stop Reasons")
         stop_reasons = analysis['error_summary'].get('Stop Reason', {})
         if stop_reasons:
@@ -211,7 +204,7 @@ def main():
     st.set_page_config(page_title="Charging Data Analyzer", layout="wide")
     st.title("EV Charging Session Analyzer")
 
-    # All controls in main area
+    # Configuration
     st.markdown("### Configuration")
     col1, col2 = st.columns(2)
     with col1:
@@ -229,7 +222,7 @@ def main():
     with col4:
         st.write("Charger filter available after first merge")
 
-    # File uploader
+    # Upload
     st.markdown("### Upload Files")
     uploaded_files = st.file_uploader(
         "Upload Charging Session Files (CSV, TXT, XLSX, XLS)",
@@ -248,7 +241,7 @@ def main():
     failed_names = []
 
     st.markdown("### File Previews")
-    tabs = st.tabs([f"{f.name} ({'OK' if i < len(successful_names) else 'Failed'})" for i, f in enumerate(uploaded_files)])
+    tabs = st.tabs([f.name for f in uploaded_files])
 
     for i, file in enumerate(uploaded_files):
         with tabs[i]:
@@ -256,10 +249,7 @@ def main():
             file_bytes = file.read()
             df = read_any_file_from_bytes(file.name, file_bytes)
             if df is not None:
-                st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns")
                 st.dataframe(df.head(5), use_container_width=True)
-
-                # Single file download
                 csv_bytes = df.to_csv(index=False, encoding='utf-8-sig').encode()
                 st.download_button(
                     f"Download {file.name}",
@@ -268,11 +258,9 @@ def main():
                     mime='text/csv',
                     use_container_width=True
                 )
-
                 successful_dfs.append(df)
                 successful_names.append(file.name)
             else:
-                st.error(f"Failed to read {file.name}")
                 failed_names.append(file.name)
 
     if not successful_dfs:
@@ -291,7 +279,6 @@ def main():
                 normalize_cols=normalize_cols
             )
 
-            # Apply energy filters
             filtered_df = merged_df.copy()
             if min_energy > 0:
                 filtered_df = filtered_df[filtered_df['Charged Energy (kWh)'] >= min_energy]
@@ -304,7 +291,6 @@ def main():
     if 'merged_df' in st.session_state:
         df = st.session_state.merged_df
 
-        # Charger filter
         if 'charger_options' in st.session_state:
             selected_chargers = st.multiselect(
                 "Filter by Charger Serial Number",
@@ -316,7 +302,6 @@ def main():
 
         st.markdown(f"### Analysis Results ({len(df)} sessions)")
 
-        # Key metrics
         col1, col2, col3, col4 = st.columns(4)
         with col1:
             st.metric("Total Energy", f"{df['Charged Energy (kWh)'].sum():.1f} kWh")
@@ -327,26 +312,17 @@ def main():
         with col4:
             st.metric("Unique Chargers", df['Charger Serial Number'].nunique())
 
-        # Perform analysis
-        analysis, analyzed_df = analyze_charging_data(df.copy())
-
-        # Plots
+        analysis, analyzed_df = analyze_charging_data(df)
         plot_analysis(analysis, analyzed_df)
 
-        # Detailed tables
         with st.expander("Detailed Statistics"):
             st.write("### Energy Distribution")
             st.dataframe(df['Charged Energy (kWh)'].describe())
-
             st.write("### Duration Distribution (minutes)")
-            duration_stats = analyzed_df['Duration'].describe()
-            st.dataframe(duration_stats)
-
+            st.dataframe(analyzed_df['Duration'].describe())
             st.write("### Charger Utilization")
-            utilization = df['Charger Serial Number'].value_counts().head(20)
-            st.dataframe(utilization)
+            st.dataframe(df['Charger Serial Number'].value_counts().head(20))
 
-        # Download merged
         st.markdown("### Download Merged Data")
         col1, col2 = st.columns(2)
         with col1:
@@ -371,11 +347,9 @@ def main():
                 use_container_width=True
             )
 
-        # Raw data
         with st.expander("View Raw Merged Data"):
             st.dataframe(df.head(preview_rows), use_container_width=True)
 
-        # Summary
         st.info(f"""
         **Summary**: {len(df)} sessions from {len(successful_names)} files. 
         Failed: {len(failed_names)} ({', '.join(failed_names) if failed_names else 'none'}).
@@ -383,10 +357,5 @@ def main():
         """)
 
 if __name__ == "__main__":
-    # Install chardet if missing
-    try:
-        import chardet
-    except ImportError:
-        st.error("Missing dependency: chardet. Install with: pip install chardet")
-        st.stop()
+    # chardet is now in requirements.txt — no install check needed
     main()
