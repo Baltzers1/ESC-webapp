@@ -14,57 +14,111 @@ import csv
 import os
 from typing import List, Optional, Dict
 import numpy as np
+import chardet
 
 @st.cache_data
-def _detect_delimiter_from_bytes(file_bytes: bytes) -> str:
-    """Detect delimiter using csv.Sniffer on a sample."""
-    sample = file_bytes[:32768].decode(errors='ignore')  # 32KB sample
+def _detect_encoding(file_bytes: bytes) -> str:
+    """Detect file encoding using chardet."""
+    result = chardet.detect(file_bytes[:100000])  # Sample first 100KB
+    return result['encoding'] or 'utf-8'
+
+@st.cache_data
+def _detect_delimiter_from_bytes(file_bytes: bytes, encoding: str) -> str:
+    """Detect delimiter using csv.Sniffer on decoded sample."""
     try:
+        sample = file_bytes[:32768].decode(encoding, errors='replace')
         sniffer = csv.Sniffer()
-        dialect = sniffer.sniff(sample)
+        dialect = sniffer.sniff(sample, delimiters=',;\t|')
         return dialect.delimiter
     except:
-        return ','
+        # Fallback: count common delimiters
+        sample_str = sample.replace('\n', '').replace('\r', '')
+        counts = {',': sample_str.count(','), ';': sample_str.count(';'), '\t': sample_str.count('\t'), '|': sample_str.count('|')}
+        return max(counts, key=counts.get) if max(counts.values()) > 0 else ','
 
-def _make_csv_trylist(delimiter: Optional[str] = None) -> List[Dict]:
+def _make_csv_trylist(delimiter: str, decimal: str = '.') -> List[Dict]:
     """Create prioritized list of read_csv configurations."""
-    configs = [
-        {'sep': ';', 'decimal': ','},
-        {'sep': ',', 'decimal': '.'},
-        {'sep': '\t', 'decimal': '.'},
-        {'sep': None, 'engine': 'python'},
+    base_configs = [
+        {'sep': delimiter, 'decimal': decimal, 'encoding': 'utf-8', 'engine': 'python', 'on_bad_lines': 'skip'},
+        {'sep': delimiter, 'decimal': decimal, 'encoding': 'utf-8-sig', 'engine': 'python', 'on_bad_lines': 'skip'},
+        {'sep': delimiter, 'decimal': decimal, 'encoding': 'latin1', 'engine': 'python', 'on_bad_lines': 'skip'},
+        {'sep': delimiter, 'decimal': decimal, 'encoding': 'cp1252', 'engine': 'python', 'on_bad_lines': 'skip'},
     ]
-    if delimiter:
-        configs = [{'sep': delimiter, 'decimal': ','}] + configs
-    for config in configs:
-        config['low_memory'] = False
-        if 'engine' not in config:
-            config['engine'] = 'python'
-            config['on_bad_lines'] = 'skip'
-    return configs
+    # Add engine='c' variants for speed (if no bad lines)
+    c_configs = [
+        {'sep': delimiter, 'decimal': decimal, 'encoding': enc, 'low_memory': False}
+        for enc in ['utf-8', 'utf-8-sig', 'latin1', 'cp1252']
+    ]
+    return c_configs + base_configs + [
+        {'sep': None, 'encoding': 'utf-8', 'engine': 'python'},
+        {'sep': None, 'encoding': 'utf-8-sig', 'engine': 'python'},
+    ]
 
 @st.cache_data
 def read_any_file_from_bytes(file_name: str, file_bytes: bytes) -> Optional[pd.DataFrame]:
-    """Read file (CSV/TXT/XLSX/XLS) with robust parsing."""
+    """Read file (CSV/TXT/XLSX/XLS) with robust parsing and encoding/delimiter detection."""
     ext = os.path.splitext(file_name)[1].lower()
+    debug_info = []
+
     try:
         if ext in ['.xlsx', '.xls']:
-            return pd.read_excel(BytesIO(file_bytes))
+            df = pd.read_excel(BytesIO(file_bytes))
+            st.success(f"Excel loaded: {len(df)} rows, {len(df.columns)} cols")
+            return df
+
         elif ext in ['.csv', '.txt']:
-            delimiter = _detect_delimiter_from_bytes(file_bytes)
-            configs = _make_csv_trylist(delimiter)
-            for config in configs:
-                try:
-                    df = pd.read_csv(BytesIO(file_bytes), **config)
-                    if not df.empty:
-                        return df
-                except Exception:
-                    continue
-            raise ValueError("Failed to parse CSV/TXT")
+            # Detect encoding
+            encoding = _detect_encoding(file_bytes)
+            debug_info.append(f"Detected encoding: {encoding}")
+
+            # Read sample for delimiter
+            try:
+                sample = file_bytes[:32768].decode(encoding, errors='replace')
+                delimiter = _detect_delimiter_from_bytes(file_bytes, encoding)
+                debug_info.append(f"Detected delimiter: '{delimiter}'")
+            except:
+                delimiter = ','
+                debug_info.append("Delimiter detection failed, using ','")
+
+            # Try decimal variants
+            for decimal in [',', '.']:
+                configs = _make_csv_trylist(delimiter, decimal)
+                for i, config in enumerate(configs):
+                    config['encoding'] = config.get('encoding', encoding)
+                    try:
+                        buffer = BytesIO(file_bytes)
+                        df = pd.read_csv(buffer, **config)
+                        if not df.empty and len(df.columns) > 1:
+                            debug_info.append(f"Success with config #{i}: sep='{config['sep']}', decimal='{decimal}', encoding='{config['encoding']}'")
+                            st.success(f"CSV loaded: {len(df)} rows, {len(df.columns)} cols")
+                            if st.checkbox(f"Show debug info for {file_name}", key=f"debug_{file_name}"):
+                                st.code("\n".join(debug_info))
+                            return df
+                    except Exception as e:
+                        debug_info.append(f"Config #{i} failed: {str(e)[:100]}")
+                        continue
+
+            # Final fallback: read line by line
+            try:
+                lines = file_bytes.decode(encoding, errors='ignore').splitlines()
+                if len(lines) > 1:
+                    header = lines[0].split(delimiter)
+                    data = [line.split(delimiter) for line in lines[1:]]
+                    df = pd.DataFrame(data, columns=header)
+                    st.warning(f"Fallback line-by-line read: {len(df)} rows")
+                    return df
+            except:
+                pass
+
+            raise ValueError("All CSV parsing attempts failed")
+
         else:
             raise ValueError("Unsupported file type")
+
     except Exception as e:
         st.error(f"Error reading {file_name}: {str(e)}")
+        if st.checkbox(f"Show detailed error for {file_name}", key=f"error_{file_name}"):
+            st.code("\n".join(debug_info[-10:]))  # Show last 10 debug lines
         return None
 
 def concat_dataframes(dfs: List[pd.DataFrame], how: str = 'outer', add_source: bool = False, sources: List[str] = None, normalize_cols: bool = False) -> pd.DataFrame:
@@ -147,7 +201,6 @@ def plot_analysis(analysis: Dict, df: pd.DataFrame):
         if 'top_cars' in analysis:
             st.bar_chart(pd.Series(analysis['top_cars']))
 
-    # Error heat map
     if 'error_summary' in analysis and analysis['error_summary']:
         st.subheader("Top Stop Reasons")
         stop_reasons = analysis['error_summary'].get('Stop Reason', {})
@@ -195,7 +248,7 @@ def main():
     failed_names = []
 
     st.markdown("### File Previews")
-    tabs = st.tabs([f.name for f in uploaded_files])
+    tabs = st.tabs([f"{f.name} ({'OK' if i < len(successful_names) else 'Failed'})" for i, f in enumerate(uploaded_files)])
 
     for i, file in enumerate(uploaded_files):
         with tabs[i]:
@@ -203,7 +256,7 @@ def main():
             file_bytes = file.read()
             df = read_any_file_from_bytes(file.name, file_bytes)
             if df is not None:
-                st.success(f"Loaded {len(df)} rows")
+                st.success(f"Loaded {len(df)} rows, {len(df.columns)} columns")
                 st.dataframe(df.head(5), use_container_width=True)
 
                 # Single file download
@@ -251,7 +304,7 @@ def main():
     if 'merged_df' in st.session_state:
         df = st.session_state.merged_df
 
-        # Charger filter (now available)
+        # Charger filter
         if 'charger_options' in st.session_state:
             selected_chargers = st.multiselect(
                 "Filter by Charger Serial Number",
@@ -330,4 +383,10 @@ def main():
         """)
 
 if __name__ == "__main__":
+    # Install chardet if missing
+    try:
+        import chardet
+    except ImportError:
+        st.error("Missing dependency: chardet. Install with: pip install chardet")
+        st.stop()
     main()
