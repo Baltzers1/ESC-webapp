@@ -195,19 +195,6 @@ input_tz = None          # antatt UTC
 chosen_date = st.date_input("Velg dato for analyse (døgn)", value=pd.Timestamp.utcnow().date())
 preview_rows = 20        # default forhåndsvisning
 
-if uploaded is not None:
-    try:
-        b = uploaded.getvalue()
-        # enkel leser: la pandas sniffe
-        if uploaded.name.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(b))
-        else:
-            # csv: la pandas auto-sniffe (sep=None via engine='python')
-            df = pd.read_csv(io.BytesIO(b), sep=None, engine="python", encoding="utf-8-sig", low_memory=False)
-    except Exception as e:
-        st.error(f"Kunne ikke lese fil: {e}")
-        st.stop()
-
     if normalize_names:
         df = normalize_columns(df)
 
