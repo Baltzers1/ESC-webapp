@@ -94,8 +94,8 @@ if daily_df.empty:
 # --- Kalender Heatmap ---
 st.subheader("Kalenderbasert heatmap – Maks effekt per dag")
 
-start_date = daily_df['date'].min()
-end_date = daily_df['date'].max()
+start_date = pd.Timestamp(daily_df['date'].min())
+end_date = pd.Timestamp(daily_df['date'].max())
 all_dates = pd.date_range(start_date, end_date)
 
 num_weeks = ((end_date - start_date).days // 7) + 2
