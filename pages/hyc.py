@@ -120,3 +120,67 @@ fig.update_layout(
 )
 
 st.plotly_chart(fig, use_container_width=True)
+
+# ====================== SAMLET EFFEKT (kW) MED OVERLAPP ======================
+st.subheader("Samlet effekt (kW) – alle samtidige økter")
+
+# Tidspunkter hvert minutt i døgnet
+time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
+overlap_df = pd.DataFrame(index=time_index)
+
+# For hver økt: legg til gj.snitt og peak kW i tidsrommet
+for _, row in df_day.iterrows():
+    mask = (time_index >= row["start_clock"]) & (time_index <= row["end_clock"])
+    avg_kw = row["average amp (a)"] * 0.4  # A → kW (400V antatt)
+    peak_kw = row["peak amp (a)"] * 0.4
+    
+    overlap_df.loc[mask, 'avg_kw'] = overlap_df.loc[mask, 'avg_kw'].add(avg_kw, fill_value=0)
+    overlap_df.loc[mask, 'peak_kw'] = overlap_df.loc[mask, 'peak_kw'].add(peak_kw, fill_value=0)
+    overlap_df.loc[mask, 'count'] = overlap_df.loc[mask, 'count'].add(1, fill_value=0)
+
+overlap_df = overlap_df.fillna(0)
+
+# Ny figur
+fig2 = go.Figure()
+
+# Gjennomsnitt kW (areal)
+fig2.add_trace(go.Scatter(
+    x=overlap_df.index,
+    y=overlap_df['avg_kw'],
+    fill='tozeroy',
+    mode='lines',
+    name='Gj.snitt kW',
+    line=dict(color='lightblue'),
+    fillcolor='rgba(100, 180, 255, 0.4)'
+))
+
+# Peak kW (linje)
+fig2.add_trace(go.Scatter(
+    x=overlap_df.index,
+    y=overlap_df['peak_kw'],
+    mode='lines',
+    name='Topp kW',
+    line=dict(color='darkblue', width=2)
+))
+
+# Antall samtidige økter (sekundær y-akse)
+fig2.add_trace(go.Scatter(
+    x=overlap_df.index,
+    y=overlap_df['count'],
+    mode='lines',
+    name='Antall økter',
+    yaxis='y2',
+    line=dict(color='gray', dash='dot')
+))
+
+fig2.update_layout(
+    title=f"Samlet effekt {chosen_date:%d.%m.%Y}",
+    xaxis=dict(title="Tid på døgnet", tickformat="%H:%M"),
+    yaxis=dict(title="Effekt (kW)", range=[0, overlap_df['peak_kw'].max() * 1.1]),
+    yaxis2=dict(title="Antall økter", overlaying='y', side='right', range=[0, overlap_df['count'].max() * 1.2]),
+    hovermode="x unified",
+    height=500,
+    legend=dict(x=0, y=1.1, orientation='h')
+)
+
+st.plotly_chart(fig2, use_container_width=True)
