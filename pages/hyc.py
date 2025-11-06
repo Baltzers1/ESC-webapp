@@ -171,7 +171,7 @@ for date in sorted(df["start time"].dt.date.unique()):
             s = chunk_end
     day_df = pd.DataFrame(rows)
 
-    time_index = pd.date_range(START_OF_DAY, IPA_END_OF_DAY, freq='1min')
+    time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
     temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
 
     for _, row in day_df.iterrows():
