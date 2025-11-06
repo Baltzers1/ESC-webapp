@@ -1,10 +1,10 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime, timedelta
+from datetime import datetime
 
 # --- KONFIG ---
-st.set_page_config(page_title="Hurtiglader", layout="wide")
+st.set_page_config(page_title="Hurtiglader – Kalender Heatmap", layout="wide")
 st.title("Hurtiglader – Kalender Heatmap")
 
 # --- LAST OPP DATA ---
@@ -22,70 +22,33 @@ def load_data(files):
 
 uploaded = st.file_uploader("Last opp CSV-filer", accept_multiple_files=True)
 if not uploaded:
-    st.info("Last opp filer")
+    st.info("Last opp filer for å fortsette")
     st.stop()
 
 df = load_data(uploaded)
 df.columns = df.columns.str.strip()
 
-# --- Sjekk kolonner ---
-required = ["Start Time", "End Time", "Average Amp (A)", "Peak Amp (A)"]
+# --- Sjekk nødvendige kolonner ---
+required = ["Start Time", "End Time", "Peak Power (kW)", "Average Power (kW)"]
 missing = set(required) - set(df.columns)
 if missing:
     st.error(f"Manglende kolonner: {', '.join(missing)}")
     st.stop()
 
-# --- Konverter tid og tall ---
-df["start time"] = pd.to_datetime(df["Start Time"], format="%m/%d/%Y %H:%M:%S %z", utc=True).dt.tz_localize(None)
-df["end time"] = pd.to_datetime(df["End Time"], format="%m/%d/%Y %H:%M:%S %z", utc=True).dt.tz_localize(None)
-df["average amp (a)"] = pd.to_numeric(df["Average Amp (A)"], errors="coerce")
-df["peak amp (a)"] = pd.to_numeric(df["Peak Amp (A)"], errors="coerce")
-df = df.dropna(subset=["start time", "end time", "average amp (a)", "peak amp (a)"])
+# --- Konverter tid ---
+df["start time"] = pd.to_datetime(df["Start Time"], utc=True).dt.tz_localize(None)
+df["end time"] = pd.to_datetime(df["End Time"], utc=True).dt.tz_localize(None)
 
 # --- Beregn maks per dag ---
-daily_data = []
-unique_dates = sorted(df["start time"].dt.date.unique())
-
-for date in unique_dates:
-    day_start = pd.Timestamp.combine(date, datetime.min.time())
-    day_end = day_start + pd.Timedelta(days=1)
-
-    overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
-    if overlap.empty:
-        daily_data.append({'date': date, 'max_avg_kw': 0, 'max_peak_kw': 0})
-        continue
-
-    rows = []
-    for _, r in overlap.iterrows():
-        s = max(r["start time"], day_start)
-        e = min(r["end time"], day_end)
-        while s < e:
-            nxt = s.normalize() + pd.Timedelta(days=1)
-            chunk_end = min(nxt, e)
-            rr = r.copy()
-            rr["clipped_start"] = s
-            rr["clipped_end"] = chunk_end
-            rows.append(rr)
-            s = chunk_end
-    day_df = pd.DataFrame(rows)
-
-    time_index = pd.date_range(day_start, day_end - pd.Timedelta(seconds=1), freq='1min')
-    temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
-
-    for _, row in day_df.iterrows():
-        mask = (time_index >= row["clipped_start"]) & (time_index <= row["clipped_end"])
-        avg_kw = row["average amp (a)"] * 0.4
-        peak_kw = row["peak amp (a)"] * 0.4
-        temp.loc[mask, 'avg_kw'] += avg_kw
-        temp.loc[mask, 'peak_kw'] += peak_kw
-
-    daily_data.append({
-        'date': date,
-        'max_avg_kw': temp['avg_kw'].max(),
-        'max_peak_kw': temp['peak_kw'].max()
-    })
-
-daily_df = pd.DataFrame(daily_data)
+daily_df = (
+    df.groupby(df["start time"].dt.date)
+    .agg(
+        max_peak_kw=("Peak Power (kW)", "max"),
+        max_avg_kw=("Average Power (kW)", "max")
+    )
+    .reset_index()
+    .rename(columns={"start time": "date"})
+)
 
 if daily_df.empty:
     st.info("Ingen data tilgjengelig for heatmap.")
@@ -98,6 +61,8 @@ start_date = pd.Timestamp(daily_df['date'].min())
 end_date = pd.Timestamp(daily_df['date'].max())
 all_dates = pd.date_range(start_date, end_date)
 
+# Lag matriser for z og customdata
+weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 num_weeks = ((end_date - start_date).days // 7) + 2
 z_matrix = [[None for _ in range(num_weeks)] for _ in range(7)]
 custom_matrix = [[None for _ in range(num_weeks)] for _ in range(7)]
@@ -106,12 +71,11 @@ daily_map = {row['date']: row for _, row in daily_df.iterrows()}
 
 for d in all_dates:
     week_idx = (d - start_date).days // 7
-    wd = d.weekday()  # 0=Mon
+    wd = d.weekday()
     if d.date() in daily_map:
         z_matrix[wd][week_idx] = daily_map[d.date()]['max_peak_kw']
         custom_matrix[wd][week_idx] = daily_map[d.date()]['max_avg_kw']
 
-weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
 weeks = [f"W{i+1}" for i in range(num_weeks)]
 
 fig = go.Figure(data=go.Heatmap(
