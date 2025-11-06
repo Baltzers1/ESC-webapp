@@ -96,7 +96,7 @@ for _, row in df_day.iterrows():
 
     fig.add_trace(go.Scatter(
         x=[row["start_clock"], row["end_clock"], row["end_clock"], row["start_clock"]],
-        y=[0, 0, avg, avg],
+        y=[avg, avg, peak, peak],
         fill='toself',
         mode='none',
         fillcolor=color,
