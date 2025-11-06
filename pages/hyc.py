@@ -131,30 +131,22 @@ if daily_df.empty:
     st.info("Ingen data tilgjengelig for heatmap.")
     st.stop()
 
-# VIS HEATMAP
-fig3 = go.Figure()
-fig3.add_trace(go.Heatmap(
-    z=daily_df['max_peak_kw'],
-    x=[d.strftime('%d.%m') for d in daily_df['date']],
-    y=['Topp kW'],
-    colorscale='Blues',
-    zmin=0,
-    hoverongaps=False,
-    hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-    customdata=daily_df[['max_avg_kw']].values
-))
+# Lag ett heatmap med to rader
+z = [
+    daily_df['max_peak_kw'].tolist(),
+    daily_df['max_avg_kw'].tolist()
+]
+x = [d.strftime('%d.%m') for d in daily_df['date']]
+y = ['Topp kW', 'Gj.snitt kW']
 
-fig3.add_trace(go.Heatmap(
-    z=daily_df['max_avg_kw'],
-    x=[d.strftime('%d.%m') for d in daily_df['date']],
-    y=['Gj.snitt kW'],
+fig3 = go.Figure(data=go.Heatmap(
+    z=z,
+    x=x,
+    y=y,
     colorscale='Blues',
-    opacity=0.7,
     zmin=0,
     hoverongaps=False,
-    showscale=False,
-    hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-    customdata=daily_df[['max_peak_kw']].values
+    hovertemplate="<b>%{x}</b><br>%{y}: <b>%{z:.1f} kW</b><extra></extra>"
 ))
 
 fig3.update_layout(
