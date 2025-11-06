@@ -52,6 +52,7 @@ chosen = st.date_input("Velg dato", value=dates[0], min_value=min(dates), max_va
 day_start = pd.Timestamp.combine(chosen, datetime.min.time())
 day_end = day_start + pd.Timedelta(days=1)
 overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
+
 if overlap.empty:
     st.warning(f"Ingen ladeøkter på {chosen:%d.%m.%Y}")
     st.stop()
@@ -70,14 +71,13 @@ for _, r in overlap.iterrows():
         s = chunk_end
 df_day = pd.DataFrame(rows)
 
-def to_clock(ts): 
+def to_clock(ts):
     return datetime(1970, 1, 1, ts.hour, ts.minute, ts.second)
+
 df_day["start_clock"] = df_day["clipped_start"].apply(to_clock)
 df_day["end_clock"] = df_day["clipped_end"].apply(to_clock)
 
-
-
-# --- PLOT first ---
+# --- PLOT 1: Økter ---
 fig = go.Figure()
 max_peak = df_day["peak amp (a)"].max()
 colors = px.colors.sequential.Blues_r
@@ -113,82 +113,50 @@ END_OF_DAY = datetime(1970, 1, 1, 23, 59, 59)
 
 fig.update_xaxes(title="Tid på døgnet", type="date", tickformat="%H:%M", dtick=3600000, range=[START_OF_DAY, END_OF_DAY])
 fig.update_yaxes(title="Gjennomsnittlig Ampere (A)", range=[0, df_day["average amp (a)"].max() * 1.2])
-fig.update_layout(
-    title=f"Ladeøkter {chosen:%d.%m.%Y}",
-    height=650,
-    hovermode="x unified",
-    plot_bgcolor='white',
-    margin=dict(l=70, r=30, t=80, b=60)
-)
-
+fig.update_layout(title=f"Ladeøkter {chosen:%d.%m.%Y}", height=650, hovermode="x unified", plot_bgcolor='white', margin=dict(l=70, r=30, t=80, b=60))
 st.plotly_chart(fig, use_container_width=True)
 
-# ====================== SAMLET EFFEKT (kW) MED OVERLAPP ======================
+# --- PLOT 2: Samlet effekt ---
 st.subheader("Samlet effekt (kW) – alle samtidige økter")
 
-# Tidspunkter hvert minutt
 time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
 overlap_df = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw', 'count']).fillna(0)
 
-# For hver økt: legg til effekt i tidsrommet
 for _, row in df_day.iterrows():
     mask = (time_index >= row["start_clock"]) & (time_index <= row["end_clock"])
-    avg_kw = row["average amp (a)"] * 0.4  # 400V
+    avg_kw = row["average amp (a)"] * 0.4
     peak_kw = row["peak amp (a)"] * 0.4
-    
     overlap_df.loc[mask, 'avg_kw'] += avg_kw
     overlap_df.loc[mask, 'peak_kw'] += peak_kw
     overlap_df.loc[mask, 'count'] += 1
 
-# Ny figur
 fig2 = go.Figure()
-
-fig2.add_trace(go.Scatter(
-    x=overlap_df.index, y=overlap_df['avg_kw'],
-    fill='tozeroy', mode='lines',
-    name='Gj.snitt kW', line=dict(color='lightblue'),
-    fillcolor='rgba(100, 180, 255, 0.4)'
-))
-
-fig2.add_trace(go.Scatter(
-    x=overlap_df.index, y=overlap_df['peak_kw'],
-    mode='lines', name='Topp kW',
-    line=dict(color='darkblue', width=2)
-))
-
-fig2.add_trace(go.Scatter(
-    x=overlap_df.index, y=overlap_df['count'],
-    mode='lines', name='Antall økter',
-    yaxis='y2', line=dict(color='gray', dash='dot')
-))
+fig2.add_trace(go.Scatter(x=overlap_df.index, y=overlap_df['avg_kw'], fill='tozeroy', mode='lines', name='Gj.snitt kW', line=dict(color='lightblue'), fillcolor='rgba(100, 180, 255, 0.4)'))
+fig2.add_trace(go.Scatter(x=overlap_df.index, y=overlap_df['peak_kw'], mode='lines', name='Topp kW', line=dict(color='darkblue', width=2)))
+fig2.add_trace(go.Scatter(x=overlap_df.index, y=overlap_df['count'], mode='lines', name='Antall økter', yaxis='y2', line=dict(color='gray', dash='dot')))
 
 fig2.update_layout(
     title=f"Samlet effekt {chosen:%d.%m.%Y}",
     xaxis=dict(title="Tid på døgnet", tickformat="%H:%M"),
     yaxis=dict(title="Effekt (kW)", range=[0, overlap_df['peak_kw'].max() * 1.1]),
     yaxis2=dict(title="Antall økter", overlaying='y', side='right', range=[0, overlap_df['count'].max() * 1.2]),
-    hovermode="x unified", height=500,
-    legend=dict(x=0, y=1.1, orientation='h')
+    hovermode="x unified", height=500, legend=dict(x=0, y=1.1, orientation='h')
 )
-
 st.plotly_chart(fig2, use_container_width=True)
 
-# ====================== HEATMAP: Samlet effekt per dag ======================
+# --- PLOT 3: Heatmap per dag ---
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
-# Forbered data per dag
 daily_data = []
 for date in sorted(df["start time"].dt.date.unique()):
-    chosen = pd.Timestamp(date)
-    day_start = pd.Timestamp.combine(chosen, datetime.min.time())
+    chosen_day = pd.Timestamp(date)
+    day_start = pd.Timestamp.combine(chosen_day, datetime.min.time())
     day_end = day_start + pd.Timedelta(days=1)
-    
-    # Finn økter som overlapper dagen
+
     overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
     if overlap.empty:
         continue
-    
-    # Splitt økter ved midnatt
+
     rows = []
     for _, r in overlap.iterrows():
         s = max(r["start time"], day_start)
@@ -202,30 +170,58 @@ for date in sorted(df["start time"].dt.date.unique()):
             rows.append(rr)
             s = chunk_end
     day_df = pd.DataFrame(rows)
-    
-    # Beregn maks samlet effekt (kW)
-    time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
+
+    time_index = pd.date_range(START_OF_DAY, IPA_END_OF_DAY, freq='1min')
     temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
-    
+
     for _, row in day_df.iterrows():
-        mask = (time_index >= row["clipped_start"].apply(to_clock)) & (time_index <= row["clipped_end"].apply(to_clock))
+        start_t = row["clipped_start"]
+        end_t = row["clipped_end"]
+        mask = (time_index >= start_t) & (time_index <= end_t)
         avg_kw = row["average amp (a)"] * 0.4
         peak_kw = row["peak amp (a)"] * 0.4
         temp.loc[mask, 'avg_kw'] += avg_kw
         temp.loc[mask, 'peak_kw'] += peak_kw
-    
-    max_avg = temp['avg_kw'].max()
-    max_peak = temp['peak_kw'].max()
-    
+
     daily_data.append({
-        'date': chosen,
-        'max_avg_kw': max_avg,
-        'max_peak_kw': max_peak
+        'date': chosen_day,
+        'max_avg_kw': temp['avg_kw'].max(),
+        'max_peak_kw': temp['peak_kw'].max()
     })
 
-daily_df = pd.DataFrame(daily_data)
-if daily_df.empty:
+if not daily_data:
     st.info("Ingen data for heatmap.")
 else:
+    daily_df = pd.DataFrame(daily_data)
+    fig3 = go.Figure()
 
+    fig3.add_trace(go.Heatmap(
+        z=daily_df['max_peak_kw'],
+        x=daily_df['date'].dt.strftime('%d.%m'),
+        y=['Topp kW'],
+        colorscale='Blues',
+        hoverongaps=False,
+        hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        customdata=daily_df[['max_avg_kw']].values
+    ))
 
+    fig3.add_trace(go.Heatmap(
+        z=daily_df['max_avg_kw'],
+        x=daily_df['date'].dt.strftime('%d.%m'),
+        y=['Gj.snitt kW'],
+        colorscale='Blues',
+        opacity=0.7,
+        hoverongaps=False,
+        showscale=False,
+        hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        customdata=daily_df[['max_peak_kw']].values
+    ))
+
+    fig3.update_layout(
+        title="Maks samlet effekt per dag",
+        xaxis_title="Dato",
+        yaxis_title="",
+        height=300,
+        margin=dict(l=50, r=20, t=60, b=50)
+    )
+    st.plotly_chart(fig3, use_container_width=True)
