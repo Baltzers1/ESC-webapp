@@ -161,7 +161,7 @@ fig2.add_trace(go.Scatter(
 ))
 
 fig2.update_layout(
-    title=f"Samlet effekt {chosen_date:%d.%m.%Y}",
+    title=f"Samlet effekt {chosen:%d.%m.%Y}",
     xaxis=dict(title="Tid på døgnet", tickformat="%H:%M"),
     yaxis=dict(title="Effekt (kW)", range=[0, overlap_df['peak_kw'].max() * 1.1]),
     yaxis2=dict(title="Antall økter", overlaying='y', side='right', range=[0, overlap_df['count'].max() * 1.2]),
