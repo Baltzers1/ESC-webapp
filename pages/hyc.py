@@ -232,6 +232,7 @@ else:
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
 daily_data = []
+
 for date in sorted(df["start time"].dt.date.unique()):
     chosen = pd.Timestamp(date)
     day_start = pd.Timestamp.combine(chosen, datetime.min.time())
@@ -280,16 +281,19 @@ if not daily_data:
     st.info("Ingen data for heatmap.")
 else:
     daily_df = pd.DataFrame(daily_data)
-    fig3 = go.Figure(data=go.Heatmap(
+    
+    fig3 = go.Figure()
+    
+    fig3.add_trace(go.Heatmap(
         z=daily_df['max_peak_kw'],
         x=daily_df['date'].dt.strftime('%d.%m'),
         y=['Topp kW'],
         colorscale='Blues',
         hoverongaps=False,
         hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-        customdata=daily_df[['max_avg_kw']]
+        customdata=daily_df[['max_avg_kw']].values
     ))
-
+    
     fig3.add_trace(go.Heatmap(
         z=daily_df['max_avg_kw'],
         x=daily_df['date'].dt.strftime('%d.%m'),
@@ -299,9 +303,9 @@ else:
         hoverongaps=False,
         showscale=False,
         hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-        customdata=daily_df[['max_peak_kw']]
+        customdata=daily_df[['max_peak_kw']].values
     ))
-
+    
     fig3.update_layout(
         title="Maks samlet effekt per dag",
         xaxis_title="Dato",
@@ -309,5 +313,5 @@ else:
         height=300,
         margin=dict(l=50, r=20, t=60, b=50)
     )
-
+    
     st.plotly_chart(fig3, use_container_width=True)
