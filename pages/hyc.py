@@ -227,7 +227,8 @@ daily_df = pd.DataFrame(daily_data)
 if daily_df.empty:
     st.info("Ingen data for heatmap.")
 else:
-    # ====================== HEATMAP: Samlet effekt per dag ======================
+
+# ====================== HEATMAP: Samlet effekt per dag ======================
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
 daily_data = []
@@ -254,7 +255,6 @@ for date in sorted(df["start time"].dt.date.unique()):
             s = chunk_end
     day_df = pd.DataFrame(rows)
     
-    # Tid som .time() for sammenligning
     time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min').time
     temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
     
@@ -276,10 +276,10 @@ for date in sorted(df["start time"].dt.date.unique()):
         'max_peak_kw': max_peak
     })
 
-daily_df = pd.DataFrame(daily_data)
-if daily_df.empty:
+if not daily_data:
     st.info("Ingen data for heatmap.")
 else:
+    daily_df = pd.DataFrame(daily_data)
     fig3 = go.Figure(data=go.Heatmap(
         z=daily_df['max_peak_kw'],
         x=daily_df['date'].dt.strftime('%d.%m'),
