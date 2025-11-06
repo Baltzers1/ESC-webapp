@@ -144,7 +144,8 @@ fig2.update_layout(
 )
 st.plotly_chart(fig2, use_container_width=True)
 
-# --- PLOT 3: Heatmap per dag (VISER ALTID NOE) ---
+
+# --- PLOT 3: Heatmap per dag ---
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
 daily_data = []
@@ -193,45 +194,45 @@ else:
         })
 
     daily_df = pd.DataFrame(daily_data)
-    
+
 if daily_df.empty:
     st.info("Ingen data tilgjengelig for heatmap.")
     st.stop()
 
-    # VIS HEATMAP (selv med 1 dag)
-    fig3 = go.Figure()
+# VIS HEATMAP
+fig3 = go.Figure()
+fig3.add_trace(go.Heatmap(
+    z=daily_df['max_peak_kw'],
+    x=[d.strftime('%d.%m') for d in daily_df['date']],
+    y=['Topp kW'],
+    colorscale='Blues',
+    zmin=0,
+    hoverongaps=False,
+    hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+    customdata=daily_df[['max_avg_kw']].values
+))
 
-    fig3.add_trace(go.Heatmap(
-        z=daily_df['max_peak_kw'],
-        x=[d.strftime('%d.%m') for d in daily_df['date']],
-        y=['Topp kW'],
-        colorscale='Blues',
-        zmin=0,
-        hoverongaps=False,
-        hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-        customdata=daily_df[['max_avg_kw']].values
-    ))
+fig3.add_trace(go.Heatmap(
+    z=daily_df['max_avg_kw'],
+    x=[d.strftime('%d.%m') for d in daily_df['date']],
+    y=['Gj.snitt kW'],
+    colorscale='Blues',
+    opacity=0.7,
+    zmin=0,
+    hoverongaps=False,
+    showscale=False,
+    hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+    customdata=daily_df[['max_peak_kw']].values
+))
 
-    fig3.add_trace(go.Heatmap(
-        z=daily_df['max_avg_kw'],
-        x=[d.strftime('%d.%m') for d in daily_df['date']],
-        y=['Gj.snitt kW'],
-        colorscale='Blues',
-        opacity=0.7,
-        zmin=0,
-        hoverongaps=False,
-        showscale=False,
-        hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
-        customdata=daily_df[['max_peak_kw']].values
-    ))
+fig3.update_layout(
+    title="Maks samlet effekt per dag",
+    xaxis_title="Dato",
+    yaxis_title="",
+    height=400,
+    margin=dict(l=50, r=20, t=60, b=50),
+    xaxis=dict(tickangle=45)
+)
 
-    fig3.update_layout(
-        title="Maks samlet effekt per dag",
-        xaxis_title="Dato",
-        yaxis_title="",
-        height=300,
-        margin=dict(l=50, r=20, t=60, b=50),
-        xaxis=dict(tickangle=45)
-    )
+st.plotly_chart(fig3, use_container_width=True)
 
-    st.plotly_chart(fig3, use_container_width=True)
