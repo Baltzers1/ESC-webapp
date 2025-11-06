@@ -144,13 +144,12 @@ fig2.update_layout(
 )
 st.plotly_chart(fig2, use_container_width=True)
 
-# --- PLOT 3: Heatmap per dag ---
+# --- PLOT 3: Heatmap per dag (FIKS) ---
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
 daily_data = []
 for date in sorted(df["start time"].dt.date.unique()):
-    chosen_day = pd.Timestamp(date)
-    day_start = pd.Timestamp.combine(chosen_day, datetime.min.time())
+    day_start = pd.Timestamp.combine(date, datetime.min.time())
     day_end = day_start + pd.Timedelta(days=1)
 
     overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
@@ -171,20 +170,19 @@ for date in sorted(df["start time"].dt.date.unique()):
             s = chunk_end
     day_df = pd.DataFrame(rows)
 
-    time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
+    # Bruk full datetime for nøyaktig match
+    time_index = pd.date_range(day_start, day_end - pd.Timedelta(seconds=1), freq='1min')
     temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
 
     for _, row in day_df.iterrows():
-        start_t = row["clipped_start"]
-        end_t = row["clipped_end"]
-        mask = (time_index >= start_t) & (time_index <= end_t)
+        mask = (time_index >= row["clipped_start"]) & (time_index <= row["clipped_end"])
         avg_kw = row["average amp (a)"] * 0.4
         peak_kw = row["peak amp (a)"] * 0.4
         temp.loc[mask, 'avg_kw'] += avg_kw
         temp.loc[mask, 'peak_kw'] += peak_kw
 
     daily_data.append({
-        'date': chosen_day,
+        'date': date,
         'max_avg_kw': temp['avg_kw'].max(),
         'max_peak_kw': temp['peak_kw'].max()
     })
@@ -197,7 +195,7 @@ else:
 
     fig3.add_trace(go.Heatmap(
         z=daily_df['max_peak_kw'],
-        x=daily_df['date'].dt.strftime('%d.%m'),
+        x=daily_df['date'].apply(lambda x: x.strftime('%d.%m')),
         y=['Topp kW'],
         colorscale='Blues',
         hoverongaps=False,
@@ -207,7 +205,7 @@ else:
 
     fig3.add_trace(go.Heatmap(
         z=daily_df['max_avg_kw'],
-        x=daily_df['date'].dt.strftime('%d.%m'),
+        x=daily_df['date'].apply(lambda x: x.strftime('%d.%m')),
         y=['Gj.snitt kW'],
         colorscale='Blues',
         opacity=0.7,
