@@ -75,6 +75,99 @@ def to_clock(ts):
 df_day["start_clock"] = df_day["clipped_start"].apply(to_clock)
 df_day["end_clock"] = df_day["clipped_end"].apply(to_clock)
 
+# ====================== HEATMAP: Samlet effekt per dag ======================
+st.subheader("Samlet effekt (kW) per dag – heatmap")
+
+# Forbered data per dag
+daily_data = []
+for date in sorted(df["start time"].dt.date.unique()):
+    chosen = pd.Timestamp(date)
+    day_start = pd.Timestamp.combine(chosen, datetime.min.time())
+    day_end = day_start + pd.Timedelta(days=1)
+    
+    # Finn økter som overlapper dagen
+    overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
+    if overlap.empty:
+        continue
+    
+    # Splitt økter ved midnatt
+    rows = []
+    for _, r in overlap.iterrows():
+        s = max(r["start time"], day_start)
+        e = min(r["end time"], day_end)
+        while s < e:
+            nxt = s.normalize() + pd.Timedelta(days=1)
+            chunk_end = min(nxt, e)
+            rr = r.copy()
+            rr["clipped_start"] = s
+            rr["clipped_end"] = chunk_end
+            rows.append(rr)
+            s = chunk_end
+    day_df = pd.DataFrame(rows)
+    
+    # Beregn maks samlet effekt (kW)
+    time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min')
+    temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
+    
+    for _, row in day_df.iterrows():
+        mask = (time_index >= row["clipped_start"].apply(to_clock)) & (time_index <= row["clipped_end"].apply(to_clock))
+        avg_kw = row["average amp (a)"] * 0.4
+        peak_kw = row["peak amp (a)"] * 0.4
+        temp.loc[mask, 'avg_kw'] += avg_kw
+        temp.loc[mask, 'peak_kw'] += peak_kw
+    
+    max_avg = temp['avg_kw'].max()
+    max_peak = temp['peak_kw'].max()
+    
+    daily_data.append({
+        'date': chosen,
+        'max_avg_kw': max_avg,
+        'max_peak_kw': max_peak
+    })
+
+daily_df = pd.DataFrame(daily_data)
+if daily_df.empty:
+    st.info("Ingen data for heatmap.")
+else:
+    # Heatmap
+    fig3 = go.Figure(data=go.Heatmap(
+        z=daily_df['max_peak_kw'],
+        x=daily_df['date'].dt.strftime('%d.%m'),
+        y=['Topp kW'],
+        colorscale='Blues',
+        hoverongaps=False,
+        hovertemplate=
+            "<b>%{x}</b><br>" +
+            "Topp kW: <b>%{z:.1f}</b><br>" +
+            "Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        customdata=daily_df[['max_avg_kw']]
+    ))
+
+    fig3.add_trace(go.Heatmap(
+        z=daily_df['max_avg_kw'],
+        x=daily_df['date'].dt.strftime('%d.%m'),
+        y=['Gj.snitt kW'],
+        colorscale='Blues',
+        opacity=0.7,
+        hoverongaps=False,
+        showscale=False,
+        hovertemplate=
+            "<b>%{x}</b><br>" +
+            "Gj.snitt kW: <b>%{z:.1f}</b><br>" +
+            "Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        customdata=daily_df[['max_peak_kw']]
+    ))
+
+    fig3.update_layout(
+        title="Maks samlet effekt per dag",
+        xaxis_title="Dato",
+        yaxis_title="",
+        height=300,
+        margin=dict(l=50, r=20, t=60, b=50)
+    )
+
+    st.plotly_chart(fig3, use_container_width=True)
+
 # --- PLOT ---
 fig = go.Figure()
 max_peak = df_day["peak amp (a)"].max()
