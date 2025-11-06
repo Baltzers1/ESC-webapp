@@ -95,46 +95,43 @@ if daily_df.empty:
 # --- Kalender Heatmap ---
 st.subheader("Kalenderbasert heatmap – Maks effekt per dag")
 
-daily_df['month'] = daily_df['date'].apply(lambda d: d.month)
-daily_df['weekday'] = daily_df['date'].apply(lambda d: d.weekday())  # 0=Mon, 6=Sun
+# Lag komplett datoperiode
+start_date = daily_df['date'].min()
+end_date = daily_df['date'].max()
+all_dates = pd.date_range(start_date, end_date)
 
-months = [calendar.month_abbr[m] for m in range(1, 13)]
+# Lag matriser for z (peak) og customdata (avg)
 weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+z_matrix = [[None for _ in range(len(all_dates))] for _ in range(7)]
+custom_matrix = [[None for _ in range(len(all_dates))] for _ in range(7)]
 
-# Lag matriser for peak og avg
-z_peak = [[None]*12 for _ in range(7)]
-z_avg = [[None]*12 for _ in range(7)]
+daily_map = {row['date']: row for _, row in daily_df.iterrows()}
 
-for _, row in daily_df.iterrows():
-    z_peak[row['weekday']][row['month']-1] = row['max_peak_kw']
-    z_avg[row['weekday']][row['month']-1] = row['max_avg_kw']
+for col_idx, d in enumerate(all_dates):
+    wd = d.weekday()  # 0=Mon
+    if d.date() in daily_map:
+        z_matrix[wd][col_idx] = daily_map[d.date()]['max_peak_kw']
+        custom_matrix[wd][col_idx] = daily_map[d.date()]['max_avg_kw']
 
-# Plot med subplots
-from plotly.subplots import make_subplots
-
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True,
-                    subplot_titles=("Maks Peak kW", "Maks Gj.snitt kW"))
-
-fig.add_trace(go.Heatmap(
-    z=z_peak,
-    x=months,
+# Plot heatmap
+fig = go.Figure(data=go.Heatmap(
+    z=z_matrix,
+    x=[d.strftime('%d.%m') for d in all_dates],
     y=weekdays,
     colorscale='Greens',
-    hovertemplate="<b>%{y} %{x}</b><br>Peak kW: %{z:.1f}<extra></extra>"
-), row=1, col=1)
-
-fig.add_trace(go.Heatmap(
-    z=z_avg,
-    x=months,
-    y=weekdays,
-    colorscale='Blues',
-    hovertemplate="<b>%{y} %{x}</b><br>Avg kW: %{z:.1f}<extra></extra>"
-), row=2, col=1)
+    zmin=0,
+    hoverongaps=False,
+    customdata=custom_matrix,
+    hovertemplate="<b>%{x}</b><br>%{y}<br>Peak kW: %{z:.1f}<br>Avg kW: %{customdata:.1f}<extra></extra>"
+))
 
 fig.update_layout(
-    height=800,
-    title_text="Makslast per dag (kalendervisning)",
-    margin=dict(l=50, r=20, t=80, b=50)
+    title="Makslast per dag (kalender)",
+    xaxis_title="Dato",
+    yaxis_title="Ukedag",
+    height=600,
+    margin=dict(l=50, r=20, t=80, b=50),
+    xaxis=dict(tickangle=45)
 )
 
 st.plotly_chart(fig, use_container_width=True)
