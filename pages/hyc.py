@@ -1,8 +1,7 @@
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-from datetime import datetime
-import calendar
+from datetime import datetime, timedelta
 
 # --- KONFIG ---
 st.set_page_config(page_title="Hurtiglader", layout="wide")
@@ -30,7 +29,7 @@ df = load_data(uploaded)
 df.columns = df.columns.str.strip()
 
 # --- Sjekk kolonner ---
-required = ["Start Time", "End Time", "Average Amp (A)", "Peak Amp (A)", "Charged Energy (kWh)", "SoC Start (%)", "SoC Stop (%)"]
+required = ["Start Time", "End Time", "Average Amp (A)", "Peak Amp (A)"]
 missing = set(required) - set(df.columns)
 if missing:
     st.error(f"Manglende kolonner: {', '.join(missing)}")
@@ -75,7 +74,7 @@ for date in unique_dates:
 
     for _, row in day_df.iterrows():
         mask = (time_index >= row["clipped_start"]) & (time_index <= row["clipped_end"])
-        avg_kw = row["average amp (a)"] * 0.4  # Faktor for kW
+        avg_kw = row["average amp (a)"] * 0.4
         peak_kw = row["peak amp (a)"] * 0.4
         temp.loc[mask, 'avg_kw'] += avg_kw
         temp.loc[mask, 'peak_kw'] += peak_kw
@@ -95,43 +94,43 @@ if daily_df.empty:
 # --- Kalender Heatmap ---
 st.subheader("Kalenderbasert heatmap – Maks effekt per dag")
 
-# Lag komplett datoperiode
 start_date = daily_df['date'].min()
 end_date = daily_df['date'].max()
 all_dates = pd.date_range(start_date, end_date)
 
-# Lag matriser for z (peak) og customdata (avg)
-weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
-z_matrix = [[None for _ in range(len(all_dates))] for _ in range(7)]
-custom_matrix = [[None for _ in range(len(all_dates))] for _ in range(7)]
+num_weeks = ((end_date - start_date).days // 7) + 2
+z_matrix = [[None for _ in range(num_weeks)] for _ in range(7)]
+custom_matrix = [[None for _ in range(num_weeks)] for _ in range(7)]
 
 daily_map = {row['date']: row for _, row in daily_df.iterrows()}
 
-for col_idx, d in enumerate(all_dates):
+for d in all_dates:
+    week_idx = (d - start_date).days // 7
     wd = d.weekday()  # 0=Mon
     if d.date() in daily_map:
-        z_matrix[wd][col_idx] = daily_map[d.date()]['max_peak_kw']
-        custom_matrix[wd][col_idx] = daily_map[d.date()]['max_avg_kw']
+        z_matrix[wd][week_idx] = daily_map[d.date()]['max_peak_kw']
+        custom_matrix[wd][week_idx] = daily_map[d.date()]['max_avg_kw']
 
-# Plot heatmap
+weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun']
+weeks = [f"W{i+1}" for i in range(num_weeks)]
+
 fig = go.Figure(data=go.Heatmap(
     z=z_matrix,
-    x=[d.strftime('%d.%m') for d in all_dates],
+    x=weeks,
     y=weekdays,
     colorscale='Greens',
     zmin=0,
     hoverongaps=False,
     customdata=custom_matrix,
-    hovertemplate="<b>%{x}</b><br>%{y}<br>Peak kW: %{z:.1f}<br>Avg kW: %{customdata:.1f}<extra></extra>"
+    hovertemplate="<b>%{y}</b> %{x}<br>Peak kW: %{z:.1f}<br>Avg kW: %{customdata:.1f}<extra></extra>"
 ))
 
 fig.update_layout(
     title="Makslast per dag (kalender)",
-    xaxis_title="Dato",
+    xaxis_title="Uker",
     yaxis_title="Ukedag",
-    height=600,
-    margin=dict(l=50, r=20, t=80, b=50),
-    xaxis=dict(tickangle=45)
+    height=700,
+    margin=dict(l=50, r=20, t=80, b=50)
 )
 
 st.plotly_chart(fig, use_container_width=True)
