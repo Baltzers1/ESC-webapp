@@ -90,73 +90,79 @@ def to_day_clock(ts):
 df_day["start_clock"] = df_day["clipped_start"].apply(to_day_clock)
 df_day["end_clock"] = df_day["clipped_end"].apply(to_day_clock)
 
-# ====================== NY PLOT – ENKEL STOLPE-STIL ======================
+# ====================== KORRIGERT PLOT – STOLPER PÅ RIKTIG TID ======================
 fig = go.Figure()
 
-# Fargekart for peak ampere (jo høyere peak, jo mørkere)
+# Fargekart
 max_peak = df_day["peak amp (a)"].max()
 colors = px.colors.sequential.Blues
 
 for _, row in df_day.iterrows():
     avg = row["average amp (a)"]
     peak = row["peak amp (a)"]
-    duration_min = (row["clipped_end"] - row["clipped_start"]).total_seconds() / 60
+    duration = row["clipped_end"] - row["clipped_start"]
+    duration_min = duration.total_seconds() / 60
 
-    # Farge basert på peak (normalisert)
+    # Farge basert på peak
     color_idx = int((peak / max_peak) * (len(colors) - 1)) if max_peak > 0 else 0
     color = colors[color_idx]
 
     # Hover-tekst
     hover = (
         f"<b>{row['clipped_start']:%H:%M} – {row['clipped_end']:%H:%M}</b> ({duration_min:.0f} min)<br>"
-        f"<b>SoC:</b> {row['SoC Start (%)']}% → {row['SoC Stop (%)']}% <b>(+{row['SoC Stop (%)'] - row['SoC Start (%)']} %)</b><br>"
+        f"<b>SoC:</b> {row['SoC Start (%)']}% → {row['SoC Stop (%)']}% (+{row['SoC Stop (%)'] - row['SoC Start (%)']}%)<br>"
         f"<b>Energi:</b> {row['Charged Energy (kWh)']:.1f} kWh<br>"
         f"<b>Gj.snitt:</b> {avg:.1f} A | <b>Topp:</b> {peak:.1f} A<br>"
         f"<b>Temp:</b> Minus {row.get('Peak Pin Temp Minus (°C)', 'N/A')}°C | Plus {row.get('Peak Pin Temp Plus (°C)', 'N/A')}°C"
     )
 
-    # Legg til stolpe (horisontal bar)
+    # HORISONTAL STOLPE FRA start_clock → end_clock
     fig.add_trace(go.Bar(
         y=[avg],
-        x=[row["clipped_end"] - row["clipped_start"]],  # varighet
+        x=[duration],  # varighet
         orientation='h',
-        base=row["start_clock"],
+        base=row["start_clock"],  # starter på riktig tid
         name="",
-        marker=dict(color=color, line=dict(width=1, color='black')),
+        marker=dict(
+            color=color,
+            line=dict(width=1, color='black')
+        ),
+        width=avg * 0.6,  # tykkelse = gjennomsnitt
         hoverinfo="text",
         text=hover,
-        textposition="none",
-        width=avg * 0.8,  # Tykkelse = gjennomsnitt (skalerer med ampere)
-        offset=0,
         showlegend=False
     ))
 
-# Dummy for x-akse (klokkeslett)
+# ====================== LAYOUT ======================
+START_OF_DAY = datetime(1970, 1, 1, 0, 0, 0)
+END_OF_DAY = datetime(1970, 1, 1, 23, 59, 59)
+
 fig.update_xaxes(
     title="Tid på døgnet",
     type="date",
     tickformat="%H:%M",
     tickmode="linear",
-    dtick=3600000,  # 1 time
+    dtick=3600000,
     range=[START_OF_DAY, END_OF_DAY],
     fixedrange=True
 )
 
 fig.update_yaxes(
     title="Gjennomsnittlig Ampere (A)",
-    range=[0, df_day["average amp (a)"].max() * 1.2],
+    range=[0, df_day["average amp (a)"].max() * 1.3],
     fixedrange=True
 )
 
 fig.update_layout(
-    title=f"Ladeøkter {chosen_date:%d.%m.%Y} – Ampere vs Tid",
-    barmode='stack',
-    bargap=0.4,
-    bargroupgap=0.1,
-    height=600,
+    title=f"Ladeøkter {chosen_date:%d.%m.%Y} – Ampere vs Tid på Døgnet",
+    barmode='overlay',        # VIKTIG: overlapper, ikke stabler
+    bargap=0.5,               # avstand mellom stolper
+    bargroupgap=0,
+    height=650,
     hovermode="x unified",
     plot_bgcolor='white',
-    margin=dict(l=60, r=20, t=80, b=60)
+    margin=dict(l=70, r=30, t=80, b=60),
+    font=dict(size=12)
 )
 
 st.plotly_chart(fig, use_container_width=True)
