@@ -129,17 +129,66 @@ daily_df = pd.DataFrame(daily_data)
 if daily_df.empty:
     st.info("Ingen data for heatmap.")
 else:
-    # Heatmap
+    # ====================== HEATMAP: Samlet effekt per dag ======================
+st.subheader("Samlet effekt (kW) per dag – heatmap")
+
+daily_data = []
+for date in sorted(df["start time"].dt.date.unique()):
+    chosen = pd.Timestamp(date)
+    day_start = pd.Timestamp.combine(chosen, datetime.min.time())
+    day_end = day_start + pd.Timedelta(days=1)
+    
+    overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
+    if overlap.empty:
+        continue
+    
+    rows = []
+    for _, r in overlap.iterrows():
+        s = max(r["start time"], day_start)
+        e = min(r["end time"], day_end)
+        while s < e:
+            nxt = s.normalize() + pd.Timedelta(days=1)
+            chunk_end = min(nxt, e)
+            rr = r.copy()
+            rr["clipped_start"] = s
+            rr["clipped_end"] = chunk_end
+            rows.append(rr)
+            s = chunk_end
+    day_df = pd.DataFrame(rows)
+    
+    # Tid som .time() for sammenligning
+    time_index = pd.date_range(START_OF_DAY, END_OF_DAY, freq='1min').time
+    temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
+    
+    for _, row in day_df.iterrows():
+        start_t = row["clipped_start"].time()
+        end_t = row["clipped_end"].time()
+        mask = (time_index >= start_t) & (time_index <= end_t)
+        avg_kw = row["average amp (a)"] * 0.4
+        peak_kw = row["peak amp (a)"] * 0.4
+        temp.loc[mask, 'avg_kw'] += avg_kw
+        temp.loc[mask, 'peak_kw'] += peak_kw
+    
+    max_avg = temp['avg_kw'].max()
+    max_peak = temp['peak_kw'].max()
+    
+    daily_data.append({
+        'date': chosen,
+        'max_avg_kw': max_avg,
+        'max_peak_kw': max_peak
+    })
+
+daily_df = pd.DataFrame(daily_data)
+if daily_df.empty:
+    st.info("Ingen data for heatmap.")
+else:
     fig3 = go.Figure(data=go.Heatmap(
         z=daily_df['max_peak_kw'],
         x=daily_df['date'].dt.strftime('%d.%m'),
         y=['Topp kW'],
         colorscale='Blues',
         hoverongaps=False,
-        hovertemplate=
-            "<b>%{x}</b><br>" +
-            "Topp kW: <b>%{z:.1f}</b><br>" +
-            "Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
         customdata=daily_df[['max_avg_kw']]
     ))
 
@@ -151,10 +200,7 @@ else:
         opacity=0.7,
         hoverongaps=False,
         showscale=False,
-        hovertemplate=
-            "<b>%{x}</b><br>" +
-            "Gj.snitt kW: <b>%{z:.1f}</b><br>" +
-            "Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
+        hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
         customdata=daily_df[['max_peak_kw']]
     ))
 
@@ -168,7 +214,7 @@ else:
 
     st.plotly_chart(fig3, use_container_width=True)
 
-# --- PLOT ---
+# --- PLOT first ---
 fig = go.Figure()
 max_peak = df_day["peak amp (a)"].max()
 colors = px.colors.sequential.Blues_r
