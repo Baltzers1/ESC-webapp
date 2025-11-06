@@ -193,6 +193,10 @@ else:
         })
 
     daily_df = pd.DataFrame(daily_data)
+    
+if daily_df.empty:
+    st.info("Ingen data tilgjengelig for heatmap.")
+    st.stop()
 
     # VIS HEATMAP (selv med 1 dag)
     fig3 = go.Figure()
