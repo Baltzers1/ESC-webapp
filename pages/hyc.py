@@ -1,100 +1,126 @@
-uploaded = st.file_uploader("Velg fil (CSV eller Excel)", type=["csv", "xlsx", "xls"], accept_multiple_files=False)
+import os
+import random
+from datetime import datetime
 
-st.subheader("Analyseinnstillinger")
-normalize_names = True
-input_tz = None  # antatt UTC
-chosen_date = st.date_input("Velg dato for analyse (døgn)", value=pd.Timestamp.utcnow().date())
-preview_rows = 20
+@@ -34,6 +33,7 @@ def _read_any(file):
+    elif name.endswith((".xlsx", ".xls")):
+        return pd.read_excel(file)
+    else:
+        # Fallback: prøv begge
+        try:
+            file.seek(0)
+            return pd.read_excel(file)
+@@ -84,18 +84,13 @@ def _concat_valid(dfs):
+    st.stop()
 
-if uploaded is not None:
-    try:
-        b = uploaded.getvalue()
-        if uploaded.name.lower().endswith((".xlsx", ".xls")):
-            df = pd.read_excel(io.BytesIO(b))
-        else:
-            # CSV: la pandas sniffe, fjern low_memory
-            df = pd.read_csv(io.BytesIO(b), sep=None, engine="python", encoding="utf-8-sig")
-    except Exception as e:
-        st.error(f"Kunne ikke lese fil: {e}")
-        st.stop()
+# ---- TYPEKONVERTERING ----
+# Konverter til datetime (UTC) og fjern tidssone
+# Konverter tid → datetime (UTC), fjern tz, sikre tall i ampere-kolonner
+df["start time"] = pd.to_datetime(df["start time"], errors="coerce", utc=True)
+df["end time"] = pd.to_datetime(df["end time"], errors="coerce", utc=True)
 
-    if normalize_names:
-        df = normalize_columns(df)
+# Dropp rader med ugyldige tider
+df = df.dropna(subset=["start time", "end time"])
 
-    # Finn kolonner
-    def find_col(df, candidates):
-        for c in candidates:
-            if c in df.columns:
-                return c
-        return None
+# Fjern tidssoneinfo (naive datetimes)
+df["start time"] = df["start time"].dt.tz_localize(None)
+df["end time"] = df["end time"].dt.tz_localize(None)
 
-    start_col = find_col(df, ["start time", "start_time", "start"])
-    end_col = find_col(df, ["end time", "end_time", "end"])
-    avg_col = find_col(df, ["average amp (a)", "average_amp_a", "avg_amp", "avg_amp(a)"])
-    peak_col = find_col(df, ["peak amp (a)", "peak_amp_a", "peak_amp(a)"])
-    soc_start = find_col(df, ["soc start (%)", "soc_start", "soc_start (%)"])
-    soc_stop = find_col(df, ["soc stop (%)", "soc_stop", "soc_stop (%)"])
-    energy_col = find_col(df, ["charged energy (kwh)", "charged_energy_kwh", "charged energy"])
+# Konverter ampere-kolonner til tall
+for col in ["average amp (a)", "peak amp (a)"]:
+    df[col] = pd.to_numeric(df[col], errors="coerce")
+df = df.dropna(subset=["average amp (a)", "peak amp (a)"])
+@@ -118,26 +113,41 @@ def _concat_valid(dfs):
+    format="DD.MM.YYYY",
+)
 
-    missing = []
-    for name, val in [("start time", start_col), ("end time", end_col), ("average amp", avg_col), ("peak amp", peak_col)]:
-        if val is None:
-            missing.append(name)
-    if missing:
-        st.error(f"Kan ikke finne nødvendige kolonner: {missing}")
-        st.stop()
+# ---- OVER-MIDNATT HÅNDTERING ----
+# ---- OVER-MIDNATT: SPLITT I DØGNBITER (Alternativ C) ----
+day_start = pd.Timestamp.combine(chosen_date, datetime.min.time())
+day_end = day_start + pd.Timedelta(days=1)
+day_end   = day_start + pd.Timedelta(days=1)
 
-    # Parse datetimes
-    df = parse_datetimes(df, [start_col, end_col], input_tz=input_tz)
-    df = numeric_cols(df, [avg_col, peak_col])
-    df = filter_valid_rows(df, [start_col, end_col], [avg_col, peak_col])
+mask = (df["start time"] < day_end) & (df["end time"] > day_start)
+df_day = df.loc[mask].copy()
+if df_day.empty:
+# Finn økter som overlapper valgt døgn
+overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
+if overlap.empty:
+    st.warning(f"🚫 Ingen økter som overlapper {chosen_date:%d.%m.%Y}.")
+    st.stop()
 
-    if df.empty:
-        st.warning("Ingen gyldige økter etter rensing.")
-        st.stop()
+# Klipp økter til dagens tidsvindu
+df_day["clipped_start"] = df_day["start time"].clip(lower=day_start, upper=day_end)
+df_day["clipped_end"] = df_day["end time"].clip(lower=day_start, upper=day_end)
 
-    st.success(f"Lest {uploaded.name} — {len(df)} gyldige økter")
+# Konverter til dummy-dato for x-aksen
+rows = []
+for _, r in overlap.iterrows():
+    # Klipp først til dette døgnets vindu
+    s = max(r["start time"], day_start)
+    e = min(r["end time"], day_end)
 
-    df_day = split_rows_over_day(df, start_col, end_col, chosen_date)
-    if df_day.empty:
-        st.warning(f"🚫 Ingen økter som overlapper {chosen_date:%d.%m.%Y}.")
-        st.stop()
+    # Hvis original økt strekker seg over flere døgn, del ved midnatt (24t-biter)
+    # (I praksis, innenfor ett døgn blir det som regel én bit; men vi lar koden støtte flere cut points.)
+    while s < e:
+        next_midnight = s.normalize() + pd.Timedelta(days=1)  # neste 00:00
+        chunk_end = min(next_midnight, e)
+        rr = r.copy()
+        rr["clipped_start"] = s
+        rr["clipped_end"] = chunk_end
+        rows.append(rr)
+        s = chunk_end
 
-    # Rename til canonical names for plotting
-    df_day = df_day.rename(columns={
-        start_col: "start time",
-        end_col: "end time",
-        avg_col: "average amp (a)",
-        peak_col: "peak amp (a)",
-        soc_start: "soc start (%)" if soc_start else "soc start (%)",
-        soc_stop: "soc stop (%)" if soc_stop else "soc stop (%)",
-        energy_col: "charged energy (kwh)" if energy_col else "charged energy (kwh)",
-    })
+df_day = pd.DataFrame(rows)
 
-    # Plot
-    fig = build_plot(df_day, avg_col="average amp (a)", peak_col="peak amp (a)",
-                     start_col="clipped_start", end_col="clipped_end")
-    st.plotly_chart(fig, use_container_width=True)
+# Dummy-dato for x-akse
+def to_day_clock(ts: pd.Timestamp) -> datetime:
+    return datetime(1970, 1, 1, ts.hour, ts.minute, ts.second)
 
-    # Tabell
-    table_cols = ["start time", "end time", "clipped_start", "clipped_end",
-                  "soc start (%)", "soc stop (%)", "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
-    table_cols = [c for c in table_cols if c in df_day.columns]
-    table_df = df_day.sort_values("clipped_start")[table_cols].reset_index(drop=True)
-    st.dataframe(table_df.head(preview_rows), use_container_width=True)
+df_day["start_clock"] = df_day["clipped_start"].apply(to_day_clock)
+df_day["end_clock"] = df_day["clipped_end"].apply(to_day_clock)
+df_day["end_clock"]   = df_day["clipped_end"].apply(to_day_clock)
 
-    # Nedlasting
-    csv_bytes = table_df.to_csv(index=False).encode("utf-8-sig")
-    st.download_button("Last ned klippet data (CSV)", csv_bytes,
-                       file_name=f"clipped_{chosen_date}.csv", mime="text/csv")
-    try:
-        buf = io.BytesIO()
-        table_df.to_excel(buf, index=False)
-        st.download_button("Last ned klippet data (Excel)", buf.getvalue(),
-                           file_name=f"clipped_{chosen_date}.xlsx",
-                           mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
-    except Exception:
-        pass
+# ---- PLOTT ----
+fig = go.Figure()
+@@ -147,8 +157,10 @@ def to_day_clock(ts: pd.Timestamp) -> datetime:
+    y0, y1 = row["average amp (a)"], row["peak amp (a)"]
 
-else:
-    st.info("Last opp en fil for å komme i gang.")
+    hover = (
+        f"Start: {row['clipped_start']:%H:%M} (oppr.: {row['start time']:%d.%m %H:%M})<br>"
+        f"Slutt: {row['clipped_end']:%H:%M} (oppr.: {row['end time']:%d.%m %H:%M})<br>"
+        f"Start: {row['clipped_start']:%H:%M} "
+        f"(oppr.: {row['start time']:%d.%m %H:%M})<br>"
+        f"Slutt: {row['clipped_end']:%H:%M} "
+        f"(oppr.: {row['end time']:%d.%m %H:%M})<br>"
+        f"SoC Start: {row['soc start (%)']}%<br>"
+        f"SoC Slutt: {row['soc stop (%)']}%<br>"
+        f"Avg: {y0:.1f} A<br>"
+@@ -168,7 +180,7 @@ def to_day_clock(ts: pd.Timestamp) -> datetime:
+    ))
+
+START_OF_DAY = datetime(1970, 1, 1, 0, 0, 0)
+END_OF_DAY = datetime(1970, 1, 1, 23, 59, 59)
+END_OF_DAY   = datetime(1970, 1, 1, 23, 59, 59)
+
+fig.update_layout(
+    title=f"Ladeøkter for {chosen_date:%d.%m.%Y} (Ampere vs tid på døgnet)",
+@@ -177,7 +189,7 @@ def to_day_clock(ts: pd.Timestamp) -> datetime:
+        type="date",
+        tickformat="%H:%M",
+        tickmode="linear",
+        dtick=3600000,
+        dtick=3600000,  # 1 time i ms
+        range=[START_OF_DAY, END_OF_DAY],
+    ),
+    yaxis=dict(title="Ampere (A)"),
+@@ -190,8 +202,8 @@ def to_day_clock(ts: pd.Timestamp) -> datetime:
+# ---- TABELL ----
+with st.expander("Se data for valgt dato"):
+    table_df = df_day.sort_values("clipped_start")[
+        ["start time", "end time", "soc start (%)", "soc stop (%)",
+        ["start time", "end time", "clipped_start", "clipped_end",
+         "soc start (%)", "soc stop (%)",
+         "average amp (a)", "peak amp (a)", "charged energy (kwh)"]
+    ].reset_index(drop=True)
+    st.dataframe(table_df)
