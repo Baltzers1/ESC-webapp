@@ -144,60 +144,65 @@ fig2.update_layout(
 )
 st.plotly_chart(fig2, use_container_width=True)
 
-# --- PLOT 3: Heatmap per dag (FIKS) ---
+# --- PLOT 3: Heatmap per dag (VISER ALTID NOE) ---
 st.subheader("Samlet effekt (kW) per dag – heatmap")
 
 daily_data = []
-for date in sorted(df["start time"].dt.date.unique()):
-    day_start = pd.Timestamp.combine(date, datetime.min.time())
-    day_end = day_start + pd.Timedelta(days=1)
+unique_dates = sorted(df["start time"].dt.date.unique())
 
-    overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
-    if overlap.empty:
-        continue
-
-    rows = []
-    for _, r in overlap.iterrows():
-        s = max(r["start time"], day_start)
-        e = min(r["end time"], day_end)
-        while s < e:
-            nxt = s.normalize() + pd.Timedelta(days=1)
-            chunk_end = min(nxt, e)
-            rr = r.copy()
-            rr["clipped_start"] = s
-            rr["clipped_end"] = chunk_end
-            rows.append(rr)
-            s = chunk_end
-    day_df = pd.DataFrame(rows)
-
-    # Bruk full datetime for nøyaktig match
-    time_index = pd.date_range(day_start, day_end - pd.Timedelta(seconds=1), freq='1min')
-    temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
-
-    for _, row in day_df.iterrows():
-        mask = (time_index >= row["clipped_start"]) & (time_index <= row["clipped_end"])
-        avg_kw = row["average amp (a)"] * 0.4
-        peak_kw = row["peak amp (a)"] * 0.4
-        temp.loc[mask, 'avg_kw'] += avg_kw
-        temp.loc[mask, 'peak_kw'] += peak_kw
-
-    daily_data.append({
-        'date': date,
-        'max_avg_kw': temp['avg_kw'].max(),
-        'max_peak_kw': temp['peak_kw'].max()
-    })
-
-if not daily_data:
-    st.info("Ingen data for heatmap.")
+if len(unique_dates) == 0:
+    st.info("Ingen data tilgjengelig for heatmap.")
 else:
+    for date in unique_dates:
+        day_start = pd.Timestamp.combine(date, datetime.min.time())
+        day_end = day_start + pd.Timedelta(days=1)
+
+        overlap = df[(df["start time"] < day_end) & (df["end time"] > day_start)].copy()
+        if overlap.empty:
+            daily_data.append({'date': date, 'max_avg_kw': 0, 'max_peak_kw': 0})
+            continue
+
+        rows = []
+        for _, r in overlap.iterrows():
+            s = max(r["start time"], day_start)
+            e = min(r["end time"], day_end)
+            while s < e:
+                nxt = s.normalize() + pd.Timedelta(days=1)
+                chunk_end = min(nxt, e)
+                rr = r.copy()
+                rr["clipped_start"] = s
+                rr["clipped_end"] = chunk_end
+                rows.append(rr)
+                s = chunk_end
+        day_df = pd.DataFrame(rows)
+
+        time_index = pd.date_range(day_start, day_end - pd.Timedelta(seconds=1), freq='1min')
+        temp = pd.DataFrame(index=time_index, columns=['avg_kw', 'peak_kw']).fillna(0)
+
+        for _, row in day_df.iterrows():
+            mask = (time_index >= row["clipped_start"]) & (time_index <= row["clipped_end"])
+            avg_kw = row["average amp (a)"] * 0.4
+            peak_kw = row["peak amp (a)"] * 0.4
+            temp.loc[mask, 'avg_kw'] += avg_kw
+            temp.loc[mask, 'peak_kw'] += peak_kw
+
+        daily_data.append({
+            'date': date,
+            'max_avg_kw': temp['avg_kw'].max(),
+            'max_peak_kw': temp['peak_kw'].max()
+        })
+
     daily_df = pd.DataFrame(daily_data)
+
+    # VIS HEATMAP (selv med 1 dag)
     fig3 = go.Figure()
 
     fig3.add_trace(go.Heatmap(
         z=daily_df['max_peak_kw'],
-        x=daily_df['date'].apply(lambda x: x.strftime('%d.%m')),
+        x=[d.strftime('%d.%m') for d in daily_df['date']],
         y=['Topp kW'],
         colorscale='Blues',
+        zmin=0,
         hoverongaps=False,
         hovertemplate="<b>%{x}</b><br>Topp kW: <b>%{z:.1f}</b><br>Gj.snitt kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
         customdata=daily_df[['max_avg_kw']].values
@@ -205,10 +210,11 @@ else:
 
     fig3.add_trace(go.Heatmap(
         z=daily_df['max_avg_kw'],
-        x=daily_df['date'].apply(lambda x: x.strftime('%d.%m')),
+        x=[d.strftime('%d.%m') for d in daily_df['date']],
         y=['Gj.snitt kW'],
         colorscale='Blues',
         opacity=0.7,
+        zmin=0,
         hoverongaps=False,
         showscale=False,
         hovertemplate="<b>%{x}</b><br>Gj.snitt kW: <b>%{z:.1f}</b><br>Topp kW: <b>%{customdata[0]:.1f}</b><extra></extra>",
@@ -220,6 +226,8 @@ else:
         xaxis_title="Dato",
         yaxis_title="",
         height=300,
-        margin=dict(l=50, r=20, t=60, b=50)
+        margin=dict(l=50, r=20, t=60, b=50),
+        xaxis=dict(tickangle=45)
     )
+
     st.plotly_chart(fig3, use_container_width=True)
